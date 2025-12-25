@@ -20,17 +20,8 @@ except FileNotFoundError:
 
 # --- 2. DATABASE CONNECTION ENGINE ---
 def get_db_connection():
-    params = urllib.parse.quote_plus(
-        f'Driver={{ODBC Driver 18 for SQL Server}};'
-        f'Server=tcp:{SERVER},1433;'
-        f'Database={DATABASE};'
-        f'Uid={USERNAME};'
-        f'Pwd={PASSWORD};'
-        f'Encrypt=yes;'
-        f'TrustServerCertificate=no;'
-        f'Connection Timeout=30;'
-    )
-    conn_str = f'mssql+pyodbc:///?odbc_connect={params}'
+    # We switch to pymssql because it works on Streamlit Cloud without complex drivers
+    conn_str = f"mssql+pymssql://{USERNAME}:{PASSWORD}@{SERVER}/{DATABASE}"
     engine = create_engine(conn_str)
     return engine
 
@@ -146,3 +137,4 @@ if df is not None:
                             time.sleep(0.5)
 
                             st.rerun()
+
