@@ -1,0 +1,4 @@
+unixodbc
+unixodbc-dev
+curl
+gnupg
