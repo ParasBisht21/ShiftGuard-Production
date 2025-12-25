@@ -6,10 +6,17 @@ import urllib
 import time
 
 # --- 1. CLOUD CONFIGURATION ---
-SERVER = "shiftguard-server-paras.database.windows.net"
-DATABASE = "shiftguard-db"
-USERNAME = "shiftadmin"
-PASSWORD = "ShiftGuard2025!" 
+# --- 1. CLOUD CONFIGURATION ---
+# We now pull these from the Cloud's "Safe Box" (Secrets)
+try:
+    SERVER = st.secrets["SERVER"]
+    DATABASE = st.secrets["DATABASE"]
+    USERNAME = st.secrets["USERNAME"]
+    PASSWORD = st.secrets["PASSWORD"]
+except FileNotFoundError:
+    # Fallback for local testing if .streamlit/secrets.toml is missing
+    st.error("Secrets not found! Please add them to .streamlit/secrets.toml or Streamlit Cloud.")
+    st.stop()
 
 # --- 2. DATABASE CONNECTION ENGINE ---
 def get_db_connection():
@@ -137,4 +144,5 @@ if df is not None:
                         if success:
                             st.toast("✅ Database Updated Successfully!")
                             time.sleep(0.5)
+
                             st.rerun()
