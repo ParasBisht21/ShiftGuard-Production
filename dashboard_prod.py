@@ -50,14 +50,12 @@ def load_data():
             if 'status' in df.columns: df['status'] = df['status'].str.strip()
 
             # --- HEURISTIC ENGINE: THE "MATH" LAYER ---
-            # We generate the inputs (Hours, BPM) so the Risk Score calculation makes sense.
-            
             first_names = ["Sarah", "Mike", "Jessica", "David", "Emily", "Robert", "Jennifer", "William", "Lisa", "James"]
             last_names = ["Chen", "Smith", "Patel", "Johnson", "Kim", "Garcia", "Singh", "Miller", "Wong", "Jones"]
             depts = ['ICU', 'ER', 'Pediatrics', 'Oncology', 'Surgical Ward']
             
             def generate_heuristic_profile(nid):
-                random.seed(nid) # Deterministic Seed (Nurse 34 is always same person)
+                random.seed(nid) # Deterministic Seed 
                 
                 full_name = f"{random.choice(first_names)} {random.choice(last_names)}"
                 dept = depts[nid % len(depts)]
@@ -67,7 +65,6 @@ def load_data():
                 hours_on_shift = np.round(base_shift + random.uniform(0, 2), 1)
                 
                 # Simulation: Stress Factor (BPM)
-                # If shift is long, BPM is higher (Simulating stress)
                 bpm = int(65 + (hours_on_shift * 2) + random.randint(-5, 5))
                 
                 return full_name, dept, hours_on_shift, bpm
@@ -90,7 +87,7 @@ def load_data():
 
             df['Calculated_Risk'] = df.apply(calculate_risk, axis=1)
             
-            # For the demo, we merge the DB value (which we can force to 98) with the math
+            # Merge DB value with Math (Max wins)
             df['incident_probability'] = df[['incident_probability', 'Calculated_Risk']].max(axis=1)
 
         return df
@@ -191,6 +188,12 @@ with tab1:
                         # Constraint-Based Filter: Only use safe nurses
                         safe_staff = df[df['incident_probability'] < 20]['Full_Name'].tolist()
                         
+                        # --- 🚨 CRASH PREVENTION: EMERGENCY PROTOCOL ---
+                        # If list is empty (everyone is tired), grab top 3 least tired people
+                        if not safe_staff:
+                            safe_staff = df.sort_values('incident_probability')['Full_Name'].head(3).tolist()
+                            logs.append("[WARNING] RESOURCE DEPLETION DETECTED. ENGAGING EMERGENCY RESERVE.")
+
                         for i, (idx, nurse) in enumerate(active_risk_df.iterrows()):
                             time.sleep(0.4) 
                             # Round-Robin Assignment
