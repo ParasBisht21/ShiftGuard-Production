@@ -259,7 +259,14 @@ with tab1:
             critical_mask = (df['incident_probability'] >= 90) | (df['status'] == 'Relieved')
             critical_nurses = df[critical_mask].sort_values('incident_probability', ascending=False)
             
+            # 1. Try to find Safe Nurses (< 30%)
             safe_nurses = df[df['incident_probability'] < 30].sort_values('incident_probability')
+            
+            # 2. EMERGENCY FALLBACK: If everyone is tired, just take the top 5 least tired people
+            if safe_nurses.empty:
+                safe_nurses = df.sort_values('incident_probability', ascending=True).head(5)
+            
+            # 3. Generate Dropdown Options
             replacement_options = safe_nurses.apply(lambda x: f"{x['Full_Name']} (ID: {x['nurse_id']} | Risk: {x['incident_probability']}%)", axis=1).tolist()
 
             if critical_nurses.empty:
@@ -306,3 +313,4 @@ with tab2:
     audit_df = load_audit_logs()
     if not audit_df.empty: st.dataframe(audit_df, use_container_width=True, hide_index=True)
     else: st.info("No records found.")
+
