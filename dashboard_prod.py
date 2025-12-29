@@ -15,17 +15,16 @@ try:
     DATABASE = st.secrets["DATABASE"]
     USERNAME = st.secrets["USERNAME"]
     PASSWORD = st.secrets["PASSWORD"]
-    # Optional Secrets (Won't crash if missing, but features will disable)
+    # Optional Secrets
     AI_KEY = st.secrets.get("AZURE_AI_KEY", "")
     AI_ENDPOINT = st.secrets.get("AZURE_AI_ENDPOINT", "")
-    LOGIC_APP_URL = st.secrets.get("LOGIC_APP_URL", "")
+    DISCORD_URL = st.secrets.get("DISCORD_WEBHOOK_URL", "")
 except FileNotFoundError:
     st.error("Secrets not found! Please check Streamlit Cloud settings.")
     st.stop()
 
 # --- 2. DATABASE CONNECTION ---
 def get_db_connection():
-    # Using pymssql for maximum compatibility with Streamlit Cloud
     conn_str = f"mssql+pymssql://{USERNAME}:{PASSWORD}@{SERVER}/{DATABASE}"
     engine = create_engine(conn_str)
     return engine
@@ -53,11 +52,9 @@ def run_sentinel_analysis(text_input):
         credential = AzureKeyCredential(AI_KEY)
         client = TextAnalyticsClient(endpoint=AI_ENDPOINT, credential=credential)
         
-        # 1. Sentiment Analysis
         response = client.analyze_sentiment(documents=[text_input])[0]
         sentiment_score = response.confidence_scores.negative
         
-        # 2. Key Phrase Extraction (Simulating Medical Entity Extraction)
         phrases_result = client.extract_key_phrases(documents=[text_input])[0]
         entities = phrases_result.key_phrases
         
@@ -77,13 +74,12 @@ def load_data():
             if 'fatigue_risk' in df.columns: df.rename(columns={'fatigue_risk': 'incident_probability'}, inplace=True)
             if 'status' in df.columns: df['status'] = df['status'].str.strip()
 
-            # HEURISTIC PROFILES
             first_names = ["Sarah", "Mike", "Jessica", "David", "Emily", "Robert", "Jennifer", "William", "Lisa", "James"]
             last_names = ["Chen", "Smith", "Patel", "Johnson", "Kim", "Garcia", "Singh", "Miller", "Wong", "Jones"]
             depts = ['ICU', 'ER', 'Pediatrics', 'Oncology', 'Surgical Ward']
             
             def generate_heuristic_profile(nid):
-                random.seed(nid) # Deterministic
+                random.seed(nid)
                 full_name = f"{random.choice(first_names)} {random.choice(last_names)}"
                 dept = depts[nid % len(depts)]
                 base_shift = 6 + (nid % 10) 
@@ -93,7 +89,6 @@ def load_data():
 
             df['Full_Name'], df['Department'], df['Hours_On_Shift'], df['BPM'] = zip(*df['nurse_id'].apply(generate_heuristic_profile))
             
-            # RISK FORMULA: Risk = (Hours * 4.5) + (Stress * 1.2)
             def calculate_risk(row):
                 if row['status'] == 'Relieved': return 12
                 stress_factor = max(0, row['BPM'] - 70)
@@ -101,7 +96,6 @@ def load_data():
                 return int(min(max(risk_score, 5), 99))
 
             df['Calculated_Risk'] = df.apply(calculate_risk, axis=1)
-            # Use max of DB or Math to ensure Demo values (98%) persist
             df['incident_probability'] = df[['incident_probability', 'Calculated_Risk']].max(axis=1)
 
         return df
@@ -118,7 +112,7 @@ def load_audit_logs():
         return df
     except Exception: return pd.DataFrame() 
 
-# --- 6. ACTIONS (SQL + LOGIC APP) ---
+# --- 6. ACTIONS (SQL + DISCORD) ---
 def relieve_nurse_in_db(fatigued_id, risk_val, replacement_name, is_ai=False):
     try:
         engine = get_db_connection()
@@ -136,16 +130,14 @@ def relieve_nurse_in_db(fatigued_id, risk_val, replacement_name, is_ai=False):
             """)
             conn.execute(sql_log, {"id": fatigued_id, "type": action_type, "risk": risk_val, "action": log_msg})
 
-        # AZURE LOGIC APP TRIGGER (Async Notification)
-        if LOGIC_APP_URL:
+        # --- DISCORD NOTIFICATION ---
+        if DISCORD_URL:
             try:
-                payload = {
-                    "message": f"Nurse {fatigued_id} relieved by {replacement_name}. Risk Level was {risk_val}%. Authorized by ShiftGuard AI.",
-                    "nurse_id": fatigued_id
-                }
-                requests.post(LOGIC_APP_URL, json=payload, timeout=2)
+                # Formatting a nice message for Discord
+                discord_msg = f"🚨 **SHIFTGUARD ALERT** 🚨\n**Nurse {fatigued_id}** relieved by **{replacement_name}**.\nRisk Level: **{risk_val}%**\nAction authorized by ShiftGuard AI."
+                requests.post(DISCORD_URL, json={"content": discord_msg}, timeout=2)
             except Exception:
-                pass # Fail silently if Logic App is down to keep dashboard alive
+                pass 
             
         return True
     except Exception: return False
@@ -155,7 +147,6 @@ def reset_simulation():
         engine = get_db_connection()
         with engine.begin() as conn:
             conn.execute(text("UPDATE nurses SET status = 'Active', fatigue_risk = 15"))
-            # Force Demo Scenarios
             conn.execute(text("UPDATE nurses SET fatigue_risk = 98 WHERE nurse_id IN (34, 68, 93, 29, 55)")) 
             conn.execute(text("TRUNCATE TABLE audit_logs"))
         return True
@@ -201,7 +192,6 @@ with tab1:
                         logs = []
                         safe_staff = df[df['incident_probability'] < 20]['Full_Name'].tolist()
                         
-                        # Crash Prevention: Emergency Protocol
                         if not safe_staff:
                             safe_staff = df.sort_values('incident_probability')['Full_Name'].head(3).tolist()
                             logs.append("[WARNING] RESOURCE DEPLETION. ENGAGING EMERGENCY RESERVE.")
@@ -226,11 +216,10 @@ with tab1:
         col_left, col_right = st.columns([2, 1])
 
         with col_left:
-            # --- THE SENTINEL (INTERACTIVE VERSION) ---
+            # --- THE SENTINEL ---
             st.markdown("### 🧠 Sentinel: Narrative Analysis")
             with st.container(border=True):
                 nurse_list = df['nurse_id'].tolist()
-                # Interactive Dropdown to select WHO reports the issue
                 selected_sentinel_id = st.selectbox("Reporting Nurse ID:", nurse_list)
                 
                 user_text = st.text_input("📝 Shift Log:", placeholder="Type here: 'I am feeling dizzy...'")
@@ -248,25 +237,20 @@ with tab1:
                                 st.warning(f"⚠️ CRITICAL LOAD DETECTED. Flagging Nurse {selected_sentinel_id}...")
                                 engine = get_db_connection()
                                 with engine.begin() as conn:
-                                    # Updates the SELECTED nurse
                                     sql_update = text("UPDATE nurses SET fatigue_risk = 99 WHERE nurse_id = :id")
                                     conn.execute(sql_update, {"id": selected_sentinel_id})
                                 time.sleep(2)
                                 st.rerun()
 
-            # --- EXPANDED HIGH PRIORITY LIST (ALL RISKS > 90) ---
+            # --- EXPANDED HIGH PRIORITY LIST ---
             st.subheader("🚨 High Priority Interventions")
             critical_mask = (df['incident_probability'] >= 90) | (df['status'] == 'Relieved')
             critical_nurses = df[critical_mask].sort_values('incident_probability', ascending=False)
             
-            # 1. Try to find Safe Nurses (< 30%)
             safe_nurses = df[df['incident_probability'] < 30].sort_values('incident_probability')
-            
-            # 2. EMERGENCY FALLBACK: If everyone is tired, just take the top 5 least tired people
             if safe_nurses.empty:
                 safe_nurses = df.sort_values('incident_probability', ascending=True).head(5)
             
-            # 3. Generate Dropdown Options
             replacement_options = safe_nurses.apply(lambda x: f"{x['Full_Name']} (ID: {x['nurse_id']} | Risk: {x['incident_probability']}%)", axis=1).tolist()
 
             if critical_nurses.empty:
@@ -313,4 +297,3 @@ with tab2:
     audit_df = load_audit_logs()
     if not audit_df.empty: st.dataframe(audit_df, use_container_width=True, hide_index=True)
     else: st.info("No records found.")
-
