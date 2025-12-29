@@ -54,7 +54,6 @@ def run_sentinel_analysis(text_input):
         sentiment_score = response.confidence_scores.negative
         
         # 2. Key Phrase Extraction (Simulating Medical Entity Extraction)
-        # We use Key Phrases to identify symptoms/events
         phrases_result = client.extract_key_phrases(documents=[text_input])[0]
         entities = phrases_result.key_phrases
         
@@ -209,12 +208,17 @@ with tab1:
         col_left, col_right = st.columns([2, 1])
 
         with col_left:
-            # --- THE SENTINEL (NEW FEATURE) ---
+            # --- THE SENTINEL (INTERACTIVE VERSION) ---
             st.markdown("### 🧠 Sentinel: Narrative Analysis")
             with st.container(border=True):
-                user_text = st.text_input("📝 Nurse Shift Log Entry:", placeholder="Type here: 'I am feeling dizzy and made a dosing error...'")
+                # THE NEW DROPDOWN FOR INTERACTIVITY
+                nurse_list = df['nurse_id'].tolist()
+                selected_sentinel_id = st.selectbox("Reporting Nurse ID:", nurse_list)
+                
+                user_text = st.text_input("📝 Shift Log:", placeholder="Type here: 'I am feeling dizzy...'")
+                
                 if st.button("Analyze Log"):
-                    if len(user_text) > 5:
+                    if len(user_text) > 3:
                         with st.spinner("Azure Neural Processing..."):
                             stress, entities = run_sentinel_analysis(user_text)
                             c1, c2 = st.columns(2)
@@ -222,11 +226,14 @@ with tab1:
                             c2.write("**Detected Factors:**")
                             for ent in entities: c2.caption(f"🔴 {ent}")
                             
+                            # Interactive Logic: Update the SELECTED nurse
                             if stress > 0.7:
-                                st.warning("⚠️ CRITICAL COGNITIVE LOAD. Updating Risk Profile...")
+                                st.warning(f"⚠️ CRITICAL LOAD DETECTED. Flagging Nurse {selected_sentinel_id}...")
                                 engine = get_db_connection()
                                 with engine.begin() as conn:
-                                    conn.execute(text("UPDATE nurses SET fatigue_risk = 99 WHERE nurse_id = 34"))
+                                    # Use the selected ID from the dropdown!
+                                    sql_update = text("UPDATE nurses SET fatigue_risk = 99 WHERE nurse_id = :id")
+                                    conn.execute(sql_update, {"id": selected_sentinel_id})
                                 time.sleep(2)
                                 st.rerun()
 
