@@ -89,6 +89,7 @@ def load_data():
 
             df['Full_Name'], df['Department'], df['Hours_On_Shift'], df['BPM'] = zip(*df['nurse_id'].apply(generate_heuristic_profile))
             
+            # RISK FORMULA: Risk = (Hours * 4.5) + (Stress * 1.2)
             def calculate_risk(row):
                 if row['status'] == 'Relieved': return 12
                 stress_factor = max(0, row['BPM'] - 70)
@@ -96,6 +97,7 @@ def load_data():
                 return int(min(max(risk_score, 5), 99))
 
             df['Calculated_Risk'] = df.apply(calculate_risk, axis=1)
+            # Use max of DB or Math (This allows AI overrides to persist)
             df['incident_probability'] = df[['incident_probability', 'Calculated_Risk']].max(axis=1)
 
         return df
@@ -130,15 +132,12 @@ def relieve_nurse_in_db(fatigued_id, risk_val, replacement_name, is_ai=False):
             """)
             conn.execute(sql_log, {"id": fatigued_id, "type": action_type, "risk": risk_val, "action": log_msg})
 
-        # --- DISCORD NOTIFICATION ---
         if DISCORD_URL:
             try:
-                # Formatting a nice message for Discord
                 discord_msg = f"🚨 **SHIFTGUARD ALERT** 🚨\n**Nurse {fatigued_id}** relieved by **{replacement_name}**.\nRisk Level: **{risk_val}%**\nAction authorized by ShiftGuard AI."
                 requests.post(DISCORD_URL, json={"content": discord_msg}, timeout=2)
             except Exception:
                 pass 
-            
         return True
     except Exception: return False
 
@@ -242,7 +241,7 @@ with tab1:
                                 time.sleep(2)
                                 st.rerun()
 
-            # --- EXPANDED HIGH PRIORITY LIST ---
+            # --- EXPANDED HIGH PRIORITY LIST WITH RISK BREAKDOWN ---
             st.subheader("🚨 High Priority Interventions")
             critical_mask = (df['incident_probability'] >= 90) | (df['status'] == 'Relieved')
             critical_nurses = df[critical_mask].sort_values('incident_probability', ascending=False)
@@ -260,6 +259,12 @@ with tab1:
                     nurse_id = int(nurse['nurse_id'])
                     risk_val = int(nurse['incident_probability'])
                     
+                    # --- NEW: Calculate Breakdown Components ---
+                    hours_contrib = round(nurse['Hours_On_Shift'] * 4.5, 1)
+                    stress_val = max(0, nurse['BPM'] - 70)
+                    stress_contrib = round(stress_val * 1.2, 1)
+                    math_total = int(min(max(hours_contrib + stress_contrib, 5), 99))
+                    
                     with st.container(border=True):
                         c1, c2, c3 = st.columns([1, 2, 1.2]) 
                         with c1:
@@ -271,6 +276,17 @@ with tab1:
                                 st.success("✅ **RELIEVED**")
                             else:
                                 st.progress(risk_val / 100, text=f"Risk: {risk_val}% | Shift: {nurse['Hours_On_Shift']}h")
+                                
+                                # --- NEW: RISK ANALYZER EXPANDER ---
+                                with st.expander("📉 View Risk Factors"):
+                                    st.write(f"**Risk Model Calculation:**")
+                                    st.caption(f"🕒 **Shift Fatigue:** {int(hours_contrib)} pts ({nurse['Hours_On_Shift']} hrs active)")
+                                    st.caption(f"💓 **Physiological Stress:** {int(stress_contrib)} pts ({nurse['BPM']} BPM)")
+                                    
+                                    # Identify if AI/Demo has forced the score higher than the math
+                                    if risk_val > math_total:
+                                        st.warning(f"⚠️ **Sentinel Override:** +{risk_val - math_total} pts (AI Narrative Detection)")
+
                         with c3:
                             if nurse['status'] != 'Relieved':
                                 with st.popover("⚡ MANAGE SWAP", use_container_width=True):
