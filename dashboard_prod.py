@@ -6,25 +6,52 @@ import numpy as np
 import time
 import random
 import requests
-import altair as alt
+import altair as alt 
 from azure.ai.textanalytics import TextAnalyticsClient
 from azure.core.credentials import AzureKeyCredential
 
-# --- 1. CONFIG & STYLING ---
+# --- 1. CONFIG & MONOCHROME THEME ---
 st.set_page_config(page_title="ShiftGuard Enterprise", layout="wide", page_icon="🛡️")
 
 def inject_custom_css():
     st.markdown("""
         <style>
+            /* GLOBAL MONOCHROME THEME */
             .stApp { background-color: #000000; color: #E5E5E5; font-family: 'Inter', sans-serif; }
-            #MainMenu, footer, header {visibility: hidden;}
+            
+            /* HIDE DEFAULT STREAMLIT CHROME */
+            #MainMenu {visibility: hidden;}
+            footer {visibility: hidden;}
+            header {visibility: hidden;}
+            
+            /* CARDS & CONTAINERS */
             div[data-testid="stMetric"], div[data-testid="stContainer"] {
-                background-color: #0F0F0F; border: 1px solid #333; border-radius: 6px; padding: 15px; color: white;
+                background-color: #0F0F0F;
+                border: 1px solid #333;
+                border-radius: 6px;
+                padding: 15px;
+                color: white;
             }
-            .user-msg { background-color: #FFF; color: #000; padding: 10px; border-radius: 12px 12px 0 12px; margin: 5px 0; text-align: right; }
-            .bot-msg { background-color: #222; border: 1px solid #444; color: #DDD; padding: 10px; border-radius: 12px 12px 12px 0; margin: 5px 0; }
-            .critical-badge { background-color: #FFF; color: #000; font-weight: 900; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; }
-            /* Force Tab Text Color */
+            
+            /* CHAT BUBBLES */
+            .user-msg { 
+                background-color: #FFFFFF; color: #000000; 
+                padding: 10px 15px; border-radius: 12px 12px 0 12px; 
+                margin: 5px 0; text-align: right; font-weight: 600; font-size: 0.9rem;
+            }
+            .bot-msg { 
+                background-color: #1A1A1A; border: 1px solid #333; 
+                color: #DDD; padding: 10px 15px; border-radius: 12px 12px 12px 0; 
+                margin: 5px 0; font-family: monospace; font-size: 0.85rem;
+            }
+            
+            /* ALERTS */
+            .critical-badge {
+                background-color: #FFFFFF; color: #000000; font-weight: 900;
+                padding: 4px 8px; border-radius: 4px; font-size: 0.75rem;
+            }
+            
+            /* TABS */
             button[data-baseweb="tab"] { color: #888; }
             button[data-baseweb="tab"][aria-selected="true"] { color: #FFF; border-bottom-color: #FFF; }
         </style>
@@ -32,7 +59,7 @@ def inject_custom_css():
 
 inject_custom_css()
 
-# --- 2. CLOUD CONNECTION ---
+# --- 2. CLOUD CONFIGURATION ---
 try:
     SERVER = st.secrets["SERVER"]
     DATABASE = st.secrets["DATABASE"]
@@ -46,20 +73,24 @@ except FileNotFoundError:
     st.error("Secrets not found! Please check Streamlit Cloud settings.")
     st.stop()
 
+# --- 3. DATABASE CONNECTION ---
 def get_db_connection():
     return create_engine(f"mssql+pymssql://{USERNAME}:{PASSWORD}@{SERVER}/{DATABASE}")
 
-# --- 3. LOGIC ENGINES ---
+# --- 4. SENTINEL ENGINE (Azure AI) ---
 def run_sentinel_analysis(text_input):
-    if not AI_KEY or not AI_ENDPOINT: return 0.88, ["System Offline", "Fatigue"]
+    if not AI_KEY or not AI_ENDPOINT:
+        return 0.88, ["System Offline (Simulated)", "Fatigue"]
     try:
         credential = AzureKeyCredential(AI_KEY)
         client = TextAnalyticsClient(endpoint=AI_ENDPOINT, credential=credential)
         response = client.analyze_sentiment(documents=[text_input])[0]
         kp = client.extract_key_phrases(documents=[text_input])[0]
         return response.confidence_scores.negative, kp.key_phrases
-    except: return 0.0, ["Connection Error"]
+    except Exception:
+        return 0.0, ["Connection Error"]
 
+# --- 5. DATA LOADERS & LOGIC ---
 def load_data():
     try:
         with get_db_connection().connect() as conn:
@@ -68,32 +99,35 @@ def load_data():
             if 'fatigue_risk' in df.columns: df.rename(columns={'fatigue_risk': 'incident_probability'}, inplace=True)
             if 'status' in df.columns: df['status'] = df['status'].str.strip()
 
-            first = ["Sarah", "Mike", "Jessica", "David", "Emily", "Robert", "Jennifer", "William", "Lisa", "James"]
-            last = ["Chen", "Smith", "Patel", "Johnson", "Kim", "Garcia", "Singh", "Miller", "Wong", "Jones"]
+            # Deterministic Profile Generation
+            first_names = ["Sarah", "Mike", "Jessica", "David", "Emily", "Robert", "Jennifer", "William", "Lisa", "James"]
+            last_names = ["Chen", "Smith", "Patel", "Johnson", "Kim", "Garcia", "Singh", "Miller", "Wong", "Jones"]
             depts = ['ICU', 'ER', 'Pediatrics', 'Oncology', 'Surgical Ward']
             
             def gen_profile(nid):
-                random.seed(nid)
-                fn = f"{first[nid % 10]} {last[nid % 10]}"
+                random.seed(nid) # Deterministic
+                fn = f"{first_names[nid % 10]} {last_names[nid % 10]}"
                 dept = depts[nid % 5]
-                base = 6 + (nid % 10) 
-                hours = np.round(base + random.uniform(0, 2), 1)
+                base_shift = 6 + (nid % 10) 
+                hours = np.round(base_shift + random.uniform(0, 2), 1)
                 bpm = int(65 + (hours * 2) + random.randint(-5, 5))
                 return fn, dept, hours, bpm
 
             df['Full_Name'], df['Department'], df['Hours_On_Shift'], df['BPM'] = zip(*df['nurse_id'].apply(gen_profile))
             
-            def calc_risk(row):
+            # YOUR RISK FORMULA
+            def calculate_risk(row):
                 if row['status'] == 'Relieved': return 12
-                stress = max(0, row['BPM'] - 70)
-                risk = (row['Hours_On_Shift'] * 4.5) + (stress * 1.2)
-                return int(min(max(risk, 5), 99))
+                stress_factor = max(0, row['BPM'] - 70)
+                risk_score = (row['Hours_On_Shift'] * 4.5) + (stress_factor * 1.2)
+                # Use max of DB or Math to persist overrides
+                return int(min(max(risk_score, row.get('incident_probability', 0), 5), 99))
 
-            df['Calculated_Risk'] = df.apply(calc_risk, axis=1)
+            df['Calculated_Risk'] = df.apply(calculate_risk, axis=1)
             df['incident_probability'] = df[['incident_probability', 'Calculated_Risk']].max(axis=1)
+
         return df
-    except Exception as e:
-        return None
+    except Exception: return None
 
 def load_audit_logs():
     try:
@@ -101,15 +135,22 @@ def load_audit_logs():
             return pd.read_sql(text("SELECT TOP 50 * FROM audit_logs ORDER BY timestamp DESC"), conn)
     except: return pd.DataFrame() 
 
-def relieve_nurse_in_db(nid, risk, rep, is_ai=False):
+# --- 6. ACTIONS (SQL + DISCORD) ---
+def relieve_nurse_in_db(fatigued_id, risk_val, replacement_name, is_ai=False):
     try:
         with get_db_connection().begin() as conn: 
-            conn.execute(text("UPDATE nurses SET fatigue_risk = 12, status = 'Relieved' WHERE nurse_id = :id"), {"id": nid})
-            action = 'AI_COPILOT_AUTO' if is_ai else 'MANUAL_SWAP'
-            msg = f"Auto-Swap with {rep}" if is_ai else f"Swapped with {rep}"
+            conn.execute(text("UPDATE nurses SET fatigue_risk = 12, status = 'Relieved' WHERE nurse_id = :id"), {"id": fatigued_id})
+            
+            action = 'AI_AUTO_RESOLVE' if is_ai else 'MANUAL_SWAP'
+            msg = f"Auto-Swap with {replacement_name}" if is_ai else f"Swapped with {replacement_name}"
+            
             conn.execute(text("INSERT INTO audit_logs (nurse_id, action_type, risk_level_at_time, manager_action) VALUES (:id, :t, :r, :a)"), 
-                         {"id": nid, "t": action, "r": risk, "a": msg})
-        if DISCORD_URL: requests.post(DISCORD_URL, json={"content": f"🚨 **ALERT** Nurse {nid} relieved by {rep}. Risk: {risk}%"}, timeout=1)
+                         {"id": fatigued_id, "t": action, "r": risk_val, "a": msg})
+
+        if DISCORD_URL:
+            try:
+                requests.post(DISCORD_URL, json={"content": f"🚨 **SHIFTGUARD ALERT**\nNurse {fatigued_id} relieved by {replacement_name}. Risk: {risk_val}%"}, timeout=1)
+            except: pass
         return True
     except: return False
 
@@ -122,134 +163,179 @@ def reset_simulation():
         return True
     except: return False
 
-def get_bot_response(q, df):
-    q = q.lower()
-    if "risk" in q:
-        r = df.sort_values('incident_probability', ascending=False).iloc[0]
-        return f"⚠️ **CRITICAL:** {r['Full_Name']} ({r['Department']}) is at {r['incident_probability']}% Risk."
-    if "status" in q:
-        c = len(df[df['incident_probability']>85])
-        return f"📊 **Status:** Active Staff: {len(df)} | Critical: {c} | Avg Risk: {int(df['incident_probability'].mean())}%"
-    return "I can help with Risk Analysis and Staffing."
+# --- 7. SMART CHAT LOGIC (The Hybrid Copilot) ---
+def get_bot_response(query, df):
+    q = query.lower()
+    
+    # INTENT: High Risk
+    if "risk" in q or "critical" in q or "danger" in q:
+        riskiest = df.sort_values('incident_probability', ascending=False).iloc[0]
+        return f"⚠️ **CRITICAL ALERT:**\n\n**{riskiest['Full_Name']}** (ID: {riskiest['nurse_id']}) is at **{riskiest['incident_probability']}% Fatigue**.\n\nLocation: {riskiest['Department']}. Immediate relief recommended."
 
-# --- 4. MAIN LAYOUT ---
+    # INTENT: Replacement
+    if "replace" in q or "swap" in q:
+        target_name = ""
+        for name in df['Full_Name'].unique():
+            if name.split()[0].lower() in q: target_name = name; break
+        
+        candidates = df[(df['incident_probability'] < 30) & (df['status'] != 'Relieved')]
+        if target_name:
+            target_dept = df[df['Full_Name'] == target_name].iloc[0]['Department']
+            dept_cands = candidates[candidates['Department'] == target_dept]
+            if not dept_cands.empty: candidates = dept_cands
+            
+        if not candidates.empty:
+            rec = candidates.sort_values('incident_probability').iloc[0]
+            return f"✅ **Recommendation:**\n\nAssign **{rec['Full_Name']}**.\n- Dept: {rec['Department']}\n- Risk: {rec['incident_probability']}%\n- Shift: {rec['Hours_On_Shift']}h"
+        return "⚠️ No low-risk staff available. Activate Float Pool."
+
+    # INTENT: Status
+    if "status" in q or "report" in q:
+        crit = len(df[df['incident_probability'] > 85])
+        return f"📊 **Unit Status Report:**\n\n- **Active Staff:** {len(df)}\n- **Critical Alerts:** {crit}\n- **Avg Fatigue:** {int(df['incident_probability'].mean())}%"
+
+    return "ShiftGuard Copilot Online. I can help with:\n- Identifying high risk staff\n- Finding replacements\n- Real-time unit status"
+
+# --- MAIN UI LAYOUT ---
+
+# 1. Header
 c1, c2 = st.columns([6, 2])
 with c1:
     st.title("SHIFTGUARD")
     st.caption("ENTERPRISE RISK COMMAND CENTER | PROD-US-EAST")
 with c2:
     st.markdown("<br><div style='text-align:right; font-family:monospace; color:#4CAF50'>🟢 SYSTEM ONLINE</div>", unsafe_allow_html=True)
+
 st.divider()
 
-# Sidebar
+# 2. Sidebar (Chat & Admin)
 with st.sidebar:
     st.header("Copilot")
-    if "messages" not in st.session_state: st.session_state.messages = [{"role":"assistant","content":"System Active."}]
+    if "messages" not in st.session_state: 
+        st.session_state.messages = [{"role":"assistant","content":"Connected to Azure SQL. Monitoring live roster."}]
+    
+    # Render Chat
     for m in st.session_state.messages:
-        st.markdown(f"<div class='{'user-msg' if m['role']=='user' else 'bot-msg'}'>{m['content']}</div>", unsafe_allow_html=True)
-    if p := st.chat_input("Query..."):
-        st.session_state.messages.append({"role":"user","content":p})
+        role_class = "user-msg" if m['role'] == "user" else "bot-msg"
+        st.markdown(f"<div class='{role_class}'>{m['content']}</div>", unsafe_allow_html=True)
+    
+    if prompt := st.chat_input("Ask about risks or staffing..."):
+        st.session_state.messages.append({"role":"user","content":prompt})
         st.rerun()
+        
     if st.session_state.messages[-1]["role"] == "user":
-        with st.spinner("Thinking..."):
-            time.sleep(0.5)
+        with st.spinner("Analyzing roster..."):
+            time.sleep(0.5) 
             df_chat = load_data()
-            if df_chat is not None:
-                r = get_bot_response(st.session_state.messages[-1]["content"], df_chat)
-                st.session_state.messages.append({"role":"assistant","content":r})
+            response = get_bot_response(st.session_state.messages[-1]["content"], df_chat)
+            st.session_state.messages.append({"role":"assistant","content":response})
             st.rerun()
-    st.divider()
-    if st.button("🔄 Reset"):
+            
+    st.markdown("---")
+    st.header("Admin Console")
+    if st.button("🔄 RESET SIMULATION", type="primary"):
         reset_simulation()
+        st.session_state.messages = [{"role":"assistant","content":"♻️ Database Reset. Starting new shift simulation."}]
         st.rerun()
 
-# 3 TABS NOW
+# 3. Tabs
 tab1, tab2, tab3 = st.tabs(["🔴 Live Operations", "📊 Analytics", "⚖️ Audit Trail"])
 
+df = load_data()
+
 with tab1:
-    df = load_data()
-    if df is None:
-        st.error("🚨 Database Connection Failed. Please check secrets.")
-    else:
-        # A. METRICS
+    if df is not None:
+        # Metrics
         active_risk_df = df[(df['incident_probability'] >= 85) & (df['status'] != 'Relieved')]
-        count = len(active_risk_df)
+        active_risk_count = len(active_risk_df)
         
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Active Staff", len(df))
-        m2.metric("Critical Risks", count, "Action Reqd" if count > 0 else None, delta_color="inverse")
+        m1.metric("Total Staff", len(df))
+        m2.metric("Critical Alerts", active_risk_count, delta="Action Reqd" if active_risk_count > 0 else None, delta_color="inverse")
         m3.metric("Avg Unit BPM", f"{int(df['BPM'].mean())}")
         m4.metric("Latency", "24ms")
 
-        st.divider()
-
-        # C. AI AUTO-FIX
-        if count > 0:
-            with st.expander("🤖 **RECOMMENDATION ENGINE**", expanded=True):
+        # AI Auto-Fix Section
+        if active_risk_count > 0:
+            with st.expander("🤖 **RECOMMENDATION ENGINE: Heuristic Optimization Detected**", expanded=True):
                 c1, c2 = st.columns([3, 1])
-                c1.markdown(f"**Status:** <span style='color:#ff4b4b'>CRITICAL</span> - {count} anomalies detected.", unsafe_allow_html=True)
-                if c2.button("🚀 EXECUTE AUTO-FIX", type="primary"):
-                    safe = df[df['incident_probability'] < 20]['Full_Name'].tolist()
-                    prog = st.progress(0)
-                    for i, (idx, row) in enumerate(active_risk_df.iterrows()):
-                        time.sleep(0.3)
-                        rep = safe[i % len(safe)] if safe else "Float"
-                        relieve_nurse_in_db(row['nurse_id'], row['incident_probability'], rep, True)
-                        prog.progress((i+1)/count)
-                    st.success("Optimization Complete.")
-                    time.sleep(1)
-                    st.rerun()
+                with c1: st.markdown(f"**Status:** <span style='color:#ff4b4b'>CRITICAL INSTABILITY</span><br>Risk Model identified **{active_risk_count}** anomalies.", unsafe_allow_html=True)
+                with c2:
+                    if st.button("🚀 EXECUTE AUTO-FIX", type="primary", use_container_width=True):
+                        safe_staff = df[df['incident_probability'] < 20]['Full_Name'].tolist()
+                        prog = st.progress(0)
+                        for i, (idx, nurse) in enumerate(active_risk_df.iterrows()):
+                            time.sleep(0.3)
+                            rep = safe_staff[i % len(safe_staff)] if safe_staff else "Float Nurse"
+                            relieve_nurse_in_db(nurse['nurse_id'], nurse['incident_probability'], rep, is_ai=True)
+                            prog.progress((i+1)/active_risk_count)
+                        st.success("Optimization Complete.")
+                        time.sleep(1)
+                        st.rerun()
 
-        # D. ROSTER & SENTINEL
-        c_left, c_right = st.columns([2, 1])
+        # Detailed Roster
+        st.subheader("🚨 High Priority Interventions")
+        critical_nurses = df[(df['incident_probability'] >= 90) | (df['status'] == 'Relieved')].sort_values('incident_probability', ascending=False)
+        safe_nurses_list = df[df['incident_probability'] < 30]['Full_Name'].tolist()
         
-        with c_left:
-            st.subheader("🚨 High Priority Interventions")
-            crit_nurses = df[(df['incident_probability'] >= 90) | (df['status'] == 'Relieved')].sort_values('incident_probability', ascending=False)
-            safe_opts = df[df['incident_probability'] < 30]['Full_Name'].tolist()
-
-            if crit_nurses.empty: st.success("✅ Unit Safe")
-            else:
-                for i, (idx, row) in enumerate(crit_nurses.iterrows()):
-                    with st.container():
-                        c1, c2, c3 = st.columns([1, 2, 1])
-                        c1.write(f"**{row['Full_Name']}**")
-                        c1.caption(f"ID: {row['nurse_id']}")
-                        if row['status'] == 'Relieved': c2.success("RELIEVED")
-                        else: c2.progress(row['incident_probability']/100, f"Risk: {row['incident_probability']}%")
+        if critical_nurses.empty:
+            st.success("✅ Unit Operating Safely.")
+        else:
+            for i, (idx, nurse) in enumerate(critical_nurses.iterrows()):
+                with st.container(border=True):
+                    c1, c2, c3 = st.columns([1, 2, 1.2]) 
+                    with c1: 
+                        st.markdown(f"### 🩺 **{nurse['nurse_id']}**")
+                        st.caption(nurse['Department'])
+                    with c2:
+                        st.markdown(f"**{nurse['Full_Name']}**")
+                        if nurse['status'] == 'Relieved': st.markdown("<span class='critical-badge'>RELIEVED</span>", unsafe_allow_html=True)
+                        else: st.progress(nurse['incident_probability'] / 100, text=f"Risk: {nurse['incident_probability']}%")
                         
-                        if row['status'] != 'Relieved':
-                            with c3.popover("Swap"):
-                                sel = st.selectbox("With:", safe_opts, key=f"s_{i}")
-                                if st.button("Confirm", key=f"c_{i}"):
-                                    relieve_nurse_in_db(row['nurse_id'], row['incident_probability'], sel)
+                        # Risk Breakdown Expander
+                        with st.expander("📉 Risk Factors"):
+                            st.caption(f"Shift: {nurse['Hours_On_Shift']}h | BPM: {nurse['BPM']}")
+                    with c3:
+                        if nurse['status'] != 'Relieved':
+                            with st.popover("⚡ MANAGE SWAP", use_container_width=True):
+                                sel = st.selectbox("Staff:", safe_nurses_list, key=f"s_{i}")
+                                if st.button(f"Confirm", key=f"c_{i}", type="primary"):
+                                    relieve_nurse_in_db(nurse['nurse_id'], nurse['incident_probability'], sel)
                                     st.rerun()
-        
-        with c_right:
-             st.subheader("🧠 Sentinel NLP")
-             with st.container(border=True):
-                 nid = st.selectbox("ID", df['nurse_id'].unique())
-                 txt = st.text_input("Log", placeholder="Dizzy...")
-                 if st.button("Analyze"):
-                     s, p = run_sentinel_analysis(txt)
-                     st.metric("Stress", f"{int(s*100)}%")
-                     st.write(p)
-                     if s > 0.7:
-                         with get_db_connection().begin() as conn:
-                             conn.execute(text("UPDATE nurses SET fatigue_risk=99 WHERE nurse_id=:id"), {"id": nid})
-                         st.error("Updated Risk Model")
-                         time.sleep(1)
-                         st.rerun()
+
+        st.subheader("📋 Full Roster")
+        st.dataframe(df[['nurse_id', 'Full_Name', 'Department', 'Hours_On_Shift', 'incident_probability', 'status']], use_container_width=True, hide_index=True)
 
 with tab2:
     st.header("📊 Enterprise Analytics")
+    
+    # Sentinel Analysis (Moved to this tab to keep Operations clean)
+    st.subheader("🧠 Sentinel NLP Engine")
+    with st.container(border=True):
+        nid = st.selectbox("Nurse ID", df['nurse_id'].unique())
+        txt = st.text_input("Shift Log", placeholder="I am feeling dizzy...")
+        if st.button("Analyze Log"):
+            score, phrases = run_sentinel_analysis(txt)
+            c1, c2 = st.columns(2)
+            c1.metric("Stress Score", f"{int(score*100)}%")
+            c2.write(phrases)
+            if score > 0.7:
+                st.error("⚠️ CRITICAL. Updating Database...")
+                with get_db_connection().begin() as conn:
+                    conn.execute(text("UPDATE nurses SET fatigue_risk=99 WHERE nurse_id=:id"), {"id": nid})
+                time.sleep(1)
+                st.rerun()
+    
+    st.divider()
+    
+    # GRAPHS with White Text (Altair)
     if df is not None:
         c1, c2 = st.columns(2)
         
-        # We use Altair to ensure WHITE text for axes
         with c1:
             st.markdown("##### Fatigue Load by Department")
             chart_data = df.groupby("Department")["incident_probability"].mean().reset_index()
+            # Explicit White Axis Colors
             c = alt.Chart(chart_data).mark_bar(color='#FF4B4B').encode(
                 x=alt.X('Department', axis=alt.Axis(labelColor='white', titleColor='white')),
                 y=alt.Y('incident_probability', title='Avg Risk %', axis=alt.Axis(labelColor='white', titleColor='white'))
@@ -267,5 +353,6 @@ with tab2:
             st.altair_chart(c, use_container_width=True)
 
 with tab3:
+    st.header("⚖️ Audit Logs")
     if st.button("Refresh"): st.rerun()
-    st.dataframe(load_audit_logs(), use_container_width=True)
+    st.dataframe(load_audit_logs(), use_container_width=True, hide_index=True)
