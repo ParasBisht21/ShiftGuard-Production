@@ -9,27 +9,7 @@ import requests
 from azure.ai.textanalytics import TextAnalyticsClient
 from azure.core.credentials import AzureKeyCredential
 
-# --- 1. CLOUD CONFIGURATION ---
-try:
-    SERVER = st.secrets["SERVER"]
-    DATABASE = st.secrets["DATABASE"]
-    USERNAME = st.secrets["USERNAME"]
-    PASSWORD = st.secrets["PASSWORD"]
-    # Optional Secrets
-    AI_KEY = st.secrets.get("AZURE_AI_KEY", "")
-    AI_ENDPOINT = st.secrets.get("AZURE_AI_ENDPOINT", "")
-    DISCORD_URL = st.secrets.get("DISCORD_WEBHOOK_URL", "")
-except FileNotFoundError:
-    st.error("Secrets not found! Please check Streamlit Cloud settings.")
-    st.stop()
-
-# --- 2. DATABASE CONNECTION ---
-def get_db_connection():
-    conn_str = f"mssql+pymssql://{USERNAME}:{PASSWORD}@{SERVER}/{DATABASE}"
-    engine = create_engine(conn_str)
-    return engine
-
-# --- 3. PAGE CONFIG & STYLING ---
+# --- 1. CONFIG & CLOUD CONNECTION ---
 st.set_page_config(page_title="ShiftGuard PROD", layout="wide", page_icon="🛡️")
 
 st.markdown("""
@@ -42,28 +22,35 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- 4. SENTINEL ENGINE (Azure AI) ---
+try:
+    SERVER = st.secrets["SERVER"]
+    DATABASE = st.secrets["DATABASE"]
+    USERNAME = st.secrets["USERNAME"]
+    PASSWORD = st.secrets["PASSWORD"]
+    AI_KEY = st.secrets.get("AZURE_AI_KEY", "")
+    AI_ENDPOINT = st.secrets.get("AZURE_AI_ENDPOINT", "")
+    DISCORD_URL = st.secrets.get("DISCORD_WEBHOOK_URL", "")
+except FileNotFoundError:
+    st.error("Secrets not found! Please check Streamlit Cloud settings.")
+    st.stop()
+
+def get_db_connection():
+    conn_str = f"mssql+pymssql://{USERNAME}:{PASSWORD}@{SERVER}/{DATABASE}"
+    engine = create_engine(conn_str)
+    return engine
+
+# --- 2. SENTINEL ENGINE (Azure AI) ---
 def run_sentinel_analysis(text_input):
-    if not AI_KEY or not AI_ENDPOINT:
-        st.error("Azure AI Secrets Missing. Check .toml file.")
-        return 0.0, ["System Offline"]
-    
+    if not AI_KEY or not AI_ENDPOINT: return 0.0, ["System Offline"]
     try:
         credential = AzureKeyCredential(AI_KEY)
         client = TextAnalyticsClient(endpoint=AI_ENDPOINT, credential=credential)
-        
         response = client.analyze_sentiment(documents=[text_input])[0]
-        sentiment_score = response.confidence_scores.negative
-        
-        phrases_result = client.extract_key_phrases(documents=[text_input])[0]
-        entities = phrases_result.key_phrases
-        
-        return sentiment_score, entities
-    except Exception as e:
-        st.error(f"Azure AI Error: {e}")
-        return 0.0, []
+        kp = client.extract_key_phrases(documents=[text_input])[0]
+        return response.confidence_scores.negative, kp.key_phrases
+    except Exception: return 0.0, []
 
-# --- 5. DATA LOADERS & HEURISTIC ENGINE ---
+# --- 3. DATA LOADERS ---
 def load_data():
     try:
         engine = get_db_connection()
@@ -89,7 +76,6 @@ def load_data():
 
             df['Full_Name'], df['Department'], df['Hours_On_Shift'], df['BPM'] = zip(*df['nurse_id'].apply(generate_heuristic_profile))
             
-            # RISK FORMULA: Risk = (Hours * 4.5) + (Stress * 1.2)
             def calculate_risk(row):
                 if row['status'] == 'Relieved': return 12
                 stress_factor = max(0, row['BPM'] - 70)
@@ -97,13 +83,10 @@ def load_data():
                 return int(min(max(risk_score, 5), 99))
 
             df['Calculated_Risk'] = df.apply(calculate_risk, axis=1)
-            # Use max of DB or Math (This allows AI overrides to persist)
             df['incident_probability'] = df[['incident_probability', 'Calculated_Risk']].max(axis=1)
 
         return df
-    except Exception as e:
-        st.error(f"🚨 Connection Failed: {e}")
-        return None
+    except Exception: return None
 
 def load_audit_logs():
     try:
@@ -114,7 +97,7 @@ def load_audit_logs():
         return df
     except Exception: return pd.DataFrame() 
 
-# --- 6. ACTIONS (SQL + DISCORD) ---
+# --- 4. ACTIONS (SQL + DISCORD) ---
 def relieve_nurse_in_db(fatigued_id, risk_val, replacement_name, is_ai=False):
     try:
         engine = get_db_connection()
@@ -134,10 +117,9 @@ def relieve_nurse_in_db(fatigued_id, risk_val, replacement_name, is_ai=False):
 
         if DISCORD_URL:
             try:
-                discord_msg = f"🚨 **SHIFTGUARD ALERT** 🚨\n**Nurse {fatigued_id}** relieved by **{replacement_name}**.\nRisk Level: **{risk_val}%**\nAction authorized by ShiftGuard AI."
-                requests.post(DISCORD_URL, json={"content": discord_msg}, timeout=2)
-            except Exception:
-                pass 
+                discord_msg = f"🚨 **SHIFTGUARD ALERT**\n**Nurse {fatigued_id}** relieved by **{replacement_name}**.\nRisk Level: **{risk_val}%**"
+                requests.post(DISCORD_URL, json={"content": discord_msg}, timeout=1)
+            except: pass 
         return True
     except Exception: return False
 
@@ -177,7 +159,7 @@ with tab1:
         m3.metric("Avg Unit BPM", f"{int(df['BPM'].mean())}", "+12% vs Baseline", delta_color="inverse")
         m4.metric("System Latency", "24ms", "Azure SQL")
 
-        # --- AI AUTO-PILOT ---
+        # --- AI AUTO-PILOT (FIXED: UNIQUE ASSIGNMENT LOGIC) ---
         if active_risk_count > 0:
             st.markdown("### ⚡ AI Counter-Measures")
             with st.expander("🤖 **RECOMMENDATION ENGINE: Heuristic Optimization Detected**", expanded=True):
@@ -189,19 +171,24 @@ with tab1:
                         status_box = st.empty()
                         progress_bar = st.progress(0)
                         logs = []
-                        safe_staff = df[df['incident_probability'] < 20]['Full_Name'].tolist()
                         
-                        if not safe_staff:
-                            safe_staff = df.sort_values('incident_probability')['Full_Name'].head(3).tolist()
-                            logs.append("[WARNING] RESOURCE DEPLETION. ENGAGING EMERGENCY RESERVE.")
+                        # --- FIX: Create a mutable pool of safe nurses ---
+                        safe_staff_pool = df[df['incident_probability'] < 30]['Full_Name'].tolist()
+                        random.shuffle(safe_staff_pool) # Shuffle to make it realistic
 
                         for i, (idx, nurse) in enumerate(active_risk_df.iterrows()):
-                            time.sleep(0.4) 
-                            replacement = safe_staff[i % len(safe_staff)]
+                            time.sleep(0.4)
+                            
+                            # --- FIX: Pop from list so we don't reuse the same person ---
+                            if len(safe_staff_pool) > 0:
+                                replacement = safe_staff_pool.pop(0)
+                            else:
+                                replacement = "Float Pool RN (External)"
+                                
                             logs.append(f"[AI] Analyzing ID {nurse['nurse_id']}... Hours: {nurse['Hours_On_Shift']} | BPM: {nurse['BPM']} -> RISK {nurse['incident_probability']}%")
                             status_box.code("\n".join(logs), language="bash")
                             time.sleep(0.3)
-                            logs.append(f"[AI] >> Allocating Resource: {replacement} (Risk: 5%)... SWAP EXECUTED.")
+                            logs.append(f"[AI] >> Allocating Resource: {replacement} (Risk: Low)... SWAP EXECUTED.")
                             status_box.code("\n".join(logs), language="bash")
                             progress_bar.progress((i + 1) / active_risk_count)
                             relieve_nurse_in_db(nurse['nurse_id'], nurse['incident_probability'], replacement, is_ai=True)
@@ -241,15 +228,14 @@ with tab1:
                                 time.sleep(2)
                                 st.rerun()
 
-            # --- EXPANDED HIGH PRIORITY LIST WITH RISK BREAKDOWN ---
+            # --- HIGH PRIORITY INTERVENTIONS ---
             st.subheader("🚨 High Priority Interventions")
             critical_mask = (df['incident_probability'] >= 90) | (df['status'] == 'Relieved')
             critical_nurses = df[critical_mask].sort_values('incident_probability', ascending=False)
             
+            # Safe pool for manual swap dropdowns
             safe_nurses = df[df['incident_probability'] < 30].sort_values('incident_probability')
-            if safe_nurses.empty:
-                safe_nurses = df.sort_values('incident_probability', ascending=True).head(5)
-            
+            if safe_nurses.empty: safe_nurses = df.sort_values('incident_probability', ascending=True).head(5)
             replacement_options = safe_nurses.apply(lambda x: f"{x['Full_Name']} (ID: {x['nurse_id']} | Risk: {x['incident_probability']}%)", axis=1).tolist()
 
             if critical_nurses.empty:
@@ -258,12 +244,6 @@ with tab1:
                 for i, (idx, nurse) in enumerate(critical_nurses.iterrows()):
                     nurse_id = int(nurse['nurse_id'])
                     risk_val = int(nurse['incident_probability'])
-                    
-                    # --- NEW: Calculate Breakdown Components ---
-                    hours_contrib = round(nurse['Hours_On_Shift'] * 4.5, 1)
-                    stress_val = max(0, nurse['BPM'] - 70)
-                    stress_contrib = round(stress_val * 1.2, 1)
-                    math_total = int(min(max(hours_contrib + stress_contrib, 5), 99))
                     
                     with st.container(border=True):
                         c1, c2, c3 = st.columns([1, 2, 1.2]) 
@@ -276,16 +256,10 @@ with tab1:
                                 st.success("✅ **RELIEVED**")
                             else:
                                 st.progress(risk_val / 100, text=f"Risk: {risk_val}% | Shift: {nurse['Hours_On_Shift']}h")
-                                
-                                # --- NEW: RISK ANALYZER EXPANDER ---
                                 with st.expander("📉 View Risk Factors"):
                                     st.write(f"**Risk Model Calculation:**")
-                                    st.caption(f"🕒 **Shift Fatigue:** {int(hours_contrib)} pts ({nurse['Hours_On_Shift']} hrs active)")
-                                    st.caption(f"💓 **Physiological Stress:** {int(stress_contrib)} pts ({nurse['BPM']} BPM)")
-                                    
-                                    # Identify if AI/Demo has forced the score higher than the math
-                                    if risk_val > math_total:
-                                        st.warning(f"⚠️ **Sentinel Override:** +{risk_val - math_total} pts (AI Narrative Detection)")
+                                    st.caption(f"🕒 Shift Fatigue: {(nurse['Hours_On_Shift'] * 4.5):.1f} pts")
+                                    st.caption(f"💓 Physio Stress: {(max(0, nurse['BPM']-70)*1.2):.1f} pts")
 
                         with c3:
                             if nurse['status'] != 'Relieved':
