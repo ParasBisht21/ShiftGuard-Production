@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import sqlalchemy
 from sqlalchemy import create_engine, text
-import numpy as np 
+import numpy as np
 import time
 import random
 import requests
@@ -313,3 +313,4 @@ with tab2:
     audit_df = load_audit_logs()
     if not audit_df.empty: st.dataframe(audit_df, use_container_width=True, hide_index=True)
     else: st.info("No records found.")
+
