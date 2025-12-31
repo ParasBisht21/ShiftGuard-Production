@@ -6,7 +6,7 @@ import numpy as np
 import time
 import random
 import requests
-import altair as alt  # Added for custom charts
+import altair as alt
 from azure.ai.textanalytics import TextAnalyticsClient
 from azure.core.credentials import AzureKeyCredential
 
@@ -24,6 +24,9 @@ def inject_custom_css():
             .user-msg { background-color: #FFF; color: #000; padding: 10px; border-radius: 12px 12px 0 12px; margin: 5px 0; text-align: right; }
             .bot-msg { background-color: #222; border: 1px solid #444; color: #DDD; padding: 10px; border-radius: 12px 12px 12px 0; margin: 5px 0; }
             .critical-badge { background-color: #FFF; color: #000; font-weight: 900; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; }
+            /* Force Tab Text Color */
+            button[data-baseweb="tab"] { color: #888; }
+            button[data-baseweb="tab"][aria-selected="true"] { color: #FFF; border-bottom-color: #FFF; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -160,8 +163,8 @@ with st.sidebar:
         reset_simulation()
         st.rerun()
 
-# Tabs
-tab1, tab2 = st.tabs(["🔴 Live Operations", "⚖️ Audit Trail"])
+# 3 TABS NOW
+tab1, tab2, tab3 = st.tabs(["🔴 Live Operations", "📊 Analytics", "⚖️ Audit Trail"])
 
 with tab1:
     df = load_data()
@@ -177,35 +180,6 @@ with tab1:
         m2.metric("Critical Risks", count, "Action Reqd" if count > 0 else None, delta_color="inverse")
         m3.metric("Avg Unit BPM", f"{int(df['BPM'].mean())}")
         m4.metric("Latency", "24ms")
-
-        st.divider()
-        
-        # B. GRAPHS (FIXED: Forced White Text using Altair)
-        g1, g2 = st.columns(2)
-        with g1:
-            st.markdown("##### 📊 Avg Fatigue by Dept")
-            chart_data = df.groupby("Department")["incident_probability"].mean().reset_index()
-            
-            # Explicit White Axis Colors
-            c = alt.Chart(chart_data).mark_bar(color='#FF4B4B').encode(
-                x=alt.X('Department', axis=alt.Axis(labelColor='white', titleColor='white')),
-                y=alt.Y('incident_probability', axis=alt.Axis(labelColor='white', titleColor='white'))
-            ).configure_view(stroke=None).properties(background='transparent')
-            
-            st.altair_chart(c, use_container_width=True)
-            
-        with g2:
-            st.markdown("##### 👥 Staff Distribution")
-            count_data = df["Department"].value_counts().reset_index()
-            count_data.columns = ["Department", "Count"]
-            
-            # Explicit White Axis Colors
-            c2_chart = alt.Chart(count_data).mark_bar(color='#333333').encode(
-                x=alt.X('Department', axis=alt.Axis(labelColor='white', titleColor='white')),
-                y=alt.Y('Count', axis=alt.Axis(labelColor='white', titleColor='white'))
-            ).configure_view(stroke=None).properties(background='transparent')
-            
-            st.altair_chart(c2_chart, use_container_width=True)
 
         st.divider()
 
@@ -268,5 +242,30 @@ with tab1:
                          st.rerun()
 
 with tab2:
+    st.header("📊 Enterprise Analytics")
+    if df is not None:
+        c1, c2 = st.columns(2)
+        
+        # We use Altair to ensure WHITE text for axes
+        with c1:
+            st.markdown("##### Fatigue Load by Department")
+            chart_data = df.groupby("Department")["incident_probability"].mean().reset_index()
+            c = alt.Chart(chart_data).mark_bar(color='#FF4B4B').encode(
+                x=alt.X('Department', axis=alt.Axis(labelColor='white', titleColor='white')),
+                y=alt.Y('incident_probability', title='Avg Risk %', axis=alt.Axis(labelColor='white', titleColor='white'))
+            ).configure_view(stroke=None).properties(background='transparent', height=300)
+            st.altair_chart(c, use_container_width=True)
+
+        with c2:
+            st.markdown("##### Staffing Distribution")
+            count_data = df["Department"].value_counts().reset_index()
+            count_data.columns = ["Department", "Count"]
+            c = alt.Chart(count_data).mark_bar(color='#333333').encode(
+                x=alt.X('Department', axis=alt.Axis(labelColor='white', titleColor='white')),
+                y=alt.Y('Count', title='Staff Count', axis=alt.Axis(labelColor='white', titleColor='white'))
+            ).configure_view(stroke=None).properties(background='transparent', height=300)
+            st.altair_chart(c, use_container_width=True)
+
+with tab3:
     if st.button("Refresh"): st.rerun()
     st.dataframe(load_audit_logs(), use_container_width=True)
