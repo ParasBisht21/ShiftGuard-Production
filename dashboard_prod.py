@@ -159,7 +159,7 @@ with tab1:
         m3.metric("Avg Unit BPM", f"{int(df['BPM'].mean())}", "+12% vs Baseline", delta_color="inverse")
         m4.metric("System Latency", "24ms", "Azure SQL")
 
-        # --- AI AUTO-PILOT (FIXED: UNIQUE ASSIGNMENT LOGIC) ---
+        # --- AI AUTO-PILOT (UPDATED LOGIC) ---
         if active_risk_count > 0:
             st.markdown("### ⚡ AI Counter-Measures")
             with st.expander("🤖 **RECOMMENDATION ENGINE: Heuristic Optimization Detected**", expanded=True):
@@ -172,14 +172,14 @@ with tab1:
                         progress_bar = st.progress(0)
                         logs = []
                         
-                        # --- FIX: Create a mutable pool of safe nurses ---
-                        safe_staff_pool = df[df['incident_probability'] < 30]['Full_Name'].tolist()
-                        random.shuffle(safe_staff_pool) # Shuffle to make it realistic
+                        # LOGIC FIX: Relaxed threshold to 50% so real nurses are picked
+                        safe_staff_pool = df[df['incident_probability'] < 50]['Full_Name'].tolist()
+                        random.shuffle(safe_staff_pool) 
 
                         for i, (idx, nurse) in enumerate(active_risk_df.iterrows()):
                             time.sleep(0.4)
                             
-                            # --- FIX: Pop from list so we don't reuse the same person ---
+                            # LOGIC FIX: Pop from list to avoid duplicates
                             if len(safe_staff_pool) > 0:
                                 replacement = safe_staff_pool.pop(0)
                             else:
@@ -233,8 +233,8 @@ with tab1:
             critical_mask = (df['incident_probability'] >= 90) | (df['status'] == 'Relieved')
             critical_nurses = df[critical_mask].sort_values('incident_probability', ascending=False)
             
-            # Safe pool for manual swap dropdowns
-            safe_nurses = df[df['incident_probability'] < 30].sort_values('incident_probability')
+            # LOGIC FIX: Manual Dropdown now allows nurses with Risk < 50
+            safe_nurses = df[df['incident_probability'] < 50].sort_values('incident_probability')
             if safe_nurses.empty: safe_nurses = df.sort_values('incident_probability', ascending=True).head(5)
             replacement_options = safe_nurses.apply(lambda x: f"{x['Full_Name']} (ID: {x['nurse_id']} | Risk: {x['incident_probability']}%)", axis=1).tolist()
 
