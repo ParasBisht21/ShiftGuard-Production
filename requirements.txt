@@ -5,3 +5,14 @@ pyodbc
 pymssql
 azure-ai-textanalytics
 azure-core
+streamlit
+pandas
+numpy
+sqlalchemy
+pymssql
+requests
+altair
+azure-ai-textanalytics
+azure-core
+SpeechRecognition
+streamlit-mic-recorder
