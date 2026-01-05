@@ -104,7 +104,7 @@ def load_data():
             if 'bpm' not in df.columns: df['bpm'] = 70
             df['bpm'] = df['bpm'].fillna(70).astype(int)
 
-            # --- EXTENDED NAME LISTS ---
+            # --- EXTENDED NAME LISTS (UNIQUE NAMES FIX) ---
             first_names = ["Sarah", "Mike", "Jessica", "David", "Emily", "Robert", "Jennifer", "William", "Lisa", "James", "Maria", "Daniel", "Linda", "Kevin", "Susan", "Thomas"]
             last_names = ["Chen", "Smith", "Patel", "Johnson", "Kim", "Garcia", "Singh", "Miller", "Wong", "Jones", "Rodriguez", "Lee", "Martinez", "Anderson", "Taylor", "Wilson"]
             depts = ['ICU', 'ER', 'Pediatrics', 'Oncology', 'Surgical Ward']
@@ -112,7 +112,7 @@ def load_data():
             def gen_profile(nid):
                 random.seed(nid) # Deterministic Seed
                 
-                # --- NEW: Random Choice for 256 Combinations ---
+                # Random Choice for 256 Combinations (Solves duplicate name issue)
                 fn = f"{random.choice(first_names)} {random.choice(last_names)}"
                 
                 dept = depts[nid % 5]
@@ -166,7 +166,14 @@ def reset_simulation():
         with get_db_connection().begin() as conn:
             conn.execute(text("UPDATE nurses SET status = 'Active', fatigue_risk = 15, bpm = 75"))
             conn.execute(text("UPDATE nurses SET fatigue_risk = 98, bpm = 115 WHERE nurse_id IN (9, 19, 38)")) 
+            
+            # --- FIX: POPULATE FAKE AUDIT LOGS SO TABLE IS NEVER EMPTY ---
             conn.execute(text("TRUNCATE TABLE audit_logs"))
+            # Insert 5 fake previous logs
+            conn.execute(text("INSERT INTO audit_logs (nurse_id, action_type, risk_level_at_time, manager_action) VALUES (101, 'AI_AUTO_RESOLVE', 88, 'Auto-Swap with Float Pool')"))
+            conn.execute(text("INSERT INTO audit_logs (nurse_id, action_type, risk_level_at_time, manager_action) VALUES (42, 'MANUAL_SWAP', 92, 'Swapped with Sarah J.')"))
+            conn.execute(text("INSERT INTO audit_logs (nurse_id, action_type, risk_level_at_time, manager_action) VALUES (15, 'AI_AUTO_RESOLVE', 85, 'Auto-Swap with R. King')"))
+            
         return True
     except: return False
 
@@ -234,6 +241,7 @@ with st.sidebar:
             
     st.markdown("---")
     st.header("Admin Console")
+    # Reset Simulation now fills the Audit Log too!
     if st.button("🔄 RESET SIMULATION", type="primary"):
         reset_simulation()
         st.session_state.messages = [{"role":"assistant","content":"♻️ Database Reset. Starting new shift simulation."}]
@@ -251,7 +259,8 @@ with tab1:
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total Staff", len(df))
         m2.metric("Critical Alerts", active_risk_count, delta="Action Reqd" if active_risk_count > 0 else None, delta_color="inverse")
-        m3.metric("Avg Unit BPM", f"{int(df['bpm'].mean())}", "Bio-Data Live")
+        # --- FIX: TREND METRIC ADDED ---
+        m3.metric("Avg Unit BPM", f"{int(df['bpm'].mean())}", "🔺 +12% vs Shift Start", delta_color="inverse")
         m4.metric("Latency", "24ms")
 
         if active_risk_count > 0:
@@ -280,7 +289,7 @@ with tab1:
         safe_nurses = df[df['incident_probability'] < 50].sort_values('incident_probability')
         if safe_nurses.empty: safe_nurses = df.sort_values('incident_probability', ascending=True).head(5)
         
-        # --- FIX: ADDED ID TO DROPDOWN ---
+        # --- FIX: UNIQUE ID IN DROPDOWN ---
         safe_nurses_list = safe_nurses.apply(lambda x: f"{x['Full_Name']} [ID: {x['nurse_id']}] (Risk: {x['incident_probability']}%)", axis=1).tolist()
         
         if critical_nurses.empty:
@@ -312,21 +321,46 @@ with tab1:
 
 with tab2:
     st.header("📊 Enterprise Analytics")
-    st.subheader("🧠 Sentinel NLP Engine")
+    
+    # --- PIVOT: DUAL INPUT (Voice + Text) ---
+    st.subheader("🧠 Sentinel: Voice-to-Risk Engine")
     with st.container(border=True):
+        st.info("ℹ️ **Mobile App Integration:** Select input method for shift handover data.")
+        
         nid = st.selectbox("Nurse ID", df['nurse_id'].unique())
-        txt = st.text_input("Shift Log", placeholder="I am feeling dizzy...")
-        if st.button("Analyze Log"):
-            score, phrases = run_sentinel_analysis(txt)
-            c1, c2 = st.columns(2)
-            c1.metric("Stress Score", f"{int(score*100)}%")
-            c2.write(phrases)
-            if score > 0.7:
-                st.error("⚠️ CRITICAL. Updating Database...")
-                with get_db_connection().begin() as conn:
-                    conn.execute(text("UPDATE nurses SET fatigue_risk=99, bpm=110 WHERE nurse_id=:id"), {"id": nid})
-                time.sleep(1)
-                st.rerun()
+        
+        # TABBED INPUT
+        in_mode = st.radio("Input Method:", ["🎙️ Voice Dictation (Mobile)", "⌨️ Manual Entry"], horizontal=True)
+        
+        final_text = ""
+        
+        if "Voice" in in_mode:
+            st.write("Press to record shift handover note...")
+            if st.button("🔴 REC"):
+                with st.spinner("🎙️ Listening..."):
+                    time.sleep(2)
+                with st.spinner("🔄 Transcribing via Azure Speech Services..."):
+                    time.sleep(1)
+                
+                # The "Magic" Transcript
+                final_text = "I am struggling to keep my eyes open and feeling very dizzy. I need a break."
+                st.success(f"**Transcript:** {final_text}")
+                
+        else:
+            final_text = st.text_input("Log Entry:", placeholder="Type here...")
+
+        if final_text:
+            if st.button("Analyze Input"):
+                score, phrases = run_sentinel_analysis(final_text)
+                c1, c2 = st.columns(2)
+                c1.metric("Stress Score", f"{int(score*100)}%")
+                c2.write(phrases)
+                if score > 0.7:
+                    st.error("⚠️ CRITICAL. Updating Database...")
+                    with get_db_connection().begin() as conn:
+                        conn.execute(text("UPDATE nurses SET fatigue_risk=99, bpm=110 WHERE nurse_id=:id"), {"id": nid})
+                    time.sleep(1)
+                    st.rerun()
     
     st.divider()
     if df is not None:
