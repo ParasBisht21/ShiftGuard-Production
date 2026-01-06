@@ -219,7 +219,12 @@ with tab1:
 
         st.subheader("🚨 High Priority Interventions")
         crit = df[(df['incident_probability'] >= 90) | (df['status'] == 'Relieved')].sort_values('incident_probability', ascending=False)
+        
+        # --- FIX: RESTORED FALLBACK LOGIC ---
         safe = df[df['incident_probability'] < 50].sort_values('incident_probability')
+        if safe.empty: safe = df.sort_values('incident_probability', ascending=True).head(5)
+        # ------------------------------------
+        
         safe_opts = safe.apply(lambda x: f"{x['Full_Name']} [ID: {x['nurse_id']}] (Risk: {x['incident_probability']}%)", axis=1).tolist()
         
         if crit.empty: st.success("✅ Unit Safe")
@@ -232,10 +237,9 @@ with tab1:
                     if row['status'] == 'Relieved': c2.success("RELIEVED")
                     else: st.progress(row['incident_probability']/100, f"Risk: {row['incident_probability']}%")
                     
-                    # --- RESTORED FEATURE: RISK BREAKDOWN ---
+                    # --- RESTORED RISK BREAKDOWN ---
                     with st.expander("📉 Risk Factors"):
                         st.caption(f"Shift: {row['Hours_On_Shift']}h | **Heart Rate: {row['bpm']} BPM**")
-                    # ----------------------------------------
                     
                     if row['status'] != 'Relieved':
                         with c3.popover("Swap"):
@@ -289,7 +293,7 @@ with tab2:
                             
                     except Exception as e:
                         # FALLBACK FOR DEMO if FFmpeg missing
-                        st.error(f"Conversion Failed (FFmpeg missing?): {e}")
+                        st.error(f"Conversion Failed: {e}")
                         st.warning("⚠️ Falling back to Simulation Mode for Demo...")
                         transcript = "I am struggling to keep my eyes open and feeling very dizzy. I need a break."
                         st.success(f"**Transcript:** {transcript}")
