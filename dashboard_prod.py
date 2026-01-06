@@ -14,7 +14,7 @@ from azure.core.credentials import AzureKeyCredential
 import speech_recognition as sr
 import io
 from streamlit_mic_recorder import mic_recorder
-from pydub import AudioSegment  # <--- NEW: FOR CONVERSION
+from pydub import AudioSegment
 
 # --- 1. CONFIG & MONOCHROME THEME ---
 st.set_page_config(page_title="ShiftGuard Enterprise", layout="wide", page_icon="🛡️")
@@ -230,7 +230,13 @@ with tab1:
                     c1.write(f"**{row['Full_Name']}**")
                     c1.caption(f"ID: {row['nurse_id']}")
                     if row['status'] == 'Relieved': c2.success("RELIEVED")
-                    else: c2.progress(row['incident_probability']/100, f"Risk: {row['incident_probability']}%")
+                    else: st.progress(row['incident_probability']/100, f"Risk: {row['incident_probability']}%")
+                    
+                    # --- RESTORED FEATURE: RISK BREAKDOWN ---
+                    with st.expander("📉 Risk Factors"):
+                        st.caption(f"Shift: {row['Hours_On_Shift']}h | **Heart Rate: {row['bpm']} BPM**")
+                    # ----------------------------------------
+                    
                     if row['status'] != 'Relieved':
                         with c3.popover("Swap"):
                             sel = st.selectbox("With:", safe_opts, key=f"s_{i}")
@@ -263,18 +269,18 @@ with tab2:
             if audio:
                 st.audio(audio['bytes'])
                 
-                # --- NEW: CONVERT WebM -> WAV using PyDub ---
+                # --- AUDIO CONVERSION LOGIC ---
                 with st.spinner("Processing Audio..."):
                     try:
                         # 1. Convert bytes to AudioSegment
                         audio_segment = AudioSegment.from_file(io.BytesIO(audio['bytes']), format="webm")
                         
-                        # 2. Export as WAV to a memory buffer
+                        # 2. Export as WAV
                         wav_buffer = io.BytesIO()
                         audio_segment.export(wav_buffer, format="wav")
                         wav_buffer.seek(0)
                         
-                        # 3. Use SpeechRecognition on the WAV data
+                        # 3. Transcribe
                         r = sr.Recognizer()
                         with sr.AudioFile(wav_buffer) as source:
                             audio_content = r.record(source)
@@ -282,7 +288,7 @@ with tab2:
                             st.success(f"**Transcript:** {transcript}")
                             
                     except Exception as e:
-                        # FALLBACK: If FFmpeg is missing, use simulation
+                        # FALLBACK FOR DEMO if FFmpeg missing
                         st.error(f"Conversion Failed (FFmpeg missing?): {e}")
                         st.warning("⚠️ Falling back to Simulation Mode for Demo...")
                         transcript = "I am struggling to keep my eyes open and feeling very dizzy. I need a break."
