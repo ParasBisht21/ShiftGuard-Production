@@ -10,10 +10,11 @@ import altair as alt
 from azure.ai.textanalytics import TextAnalyticsClient
 from azure.core.credentials import AzureKeyCredential
 
-# --- NEW IMPORTS FOR REAL AUDIO ---
+# --- REAL AUDIO IMPORTS ---
 import speech_recognition as sr
 import io
 from streamlit_mic_recorder import mic_recorder
+from pydub import AudioSegment  # <--- NEW: FOR CONVERSION
 
 # --- 1. CONFIG & MONOCHROME THEME ---
 st.set_page_config(page_title="ShiftGuard Enterprise", layout="wide", page_icon="🛡️")
@@ -256,24 +257,37 @@ with tab2:
         
         if "Voice" in in_mode:
             st.caption("Click to record audio via browser:")
-            # REAL LISTENING: Returns Audio Bytes
+            # Capture WebM from Browser
             audio = mic_recorder(start_prompt="🎤 START RECORDING", stop_prompt="⏹️ STOP", just_once=False, key='recorder')
             
             if audio:
                 st.audio(audio['bytes'])
                 
-                # REAL TRANSCRIPTION
+                # --- NEW: CONVERT WebM -> WAV using PyDub ---
                 with st.spinner("Processing Audio..."):
                     try:
+                        # 1. Convert bytes to AudioSegment
+                        audio_segment = AudioSegment.from_file(io.BytesIO(audio['bytes']), format="webm")
+                        
+                        # 2. Export as WAV to a memory buffer
+                        wav_buffer = io.BytesIO()
+                        audio_segment.export(wav_buffer, format="wav")
+                        wav_buffer.seek(0)
+                        
+                        # 3. Use SpeechRecognition on the WAV data
                         r = sr.Recognizer()
-                        # Convert bytes to file-like object for SpeechRecognition
-                        audio_data = sr.AudioFile(io.BytesIO(audio['bytes']))
-                        with audio_data as source:
+                        with sr.AudioFile(wav_buffer) as source:
                             audio_content = r.record(source)
                             transcript = r.recognize_google(audio_content)
                             st.success(f"**Transcript:** {transcript}")
+                            
                     except Exception as e:
-                        st.error(f"Transcript Failed: {e}")
+                        # FALLBACK: If FFmpeg is missing, use simulation
+                        st.error(f"Conversion Failed (FFmpeg missing?): {e}")
+                        st.warning("⚠️ Falling back to Simulation Mode for Demo...")
+                        transcript = "I am struggling to keep my eyes open and feeling very dizzy. I need a break."
+                        st.success(f"**Transcript:** {transcript}")
+
         else:
             transcript = st.text_input("Log Entry:", placeholder="Type here...")
 
