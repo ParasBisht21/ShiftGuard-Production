@@ -22,42 +22,16 @@ st.set_page_config(page_title="ShiftGuard Enterprise", layout="wide", page_icon=
 def inject_custom_css():
     st.markdown("""
         <style>
-            /* GLOBAL MONOCHROME THEME */
             .stApp { background-color: #000000; color: #E5E5E5; font-family: 'Inter', sans-serif; }
-            
-            /* HIDE DEFAULT STREAMLIT CHROME */
             #MainMenu {visibility: hidden;}
             footer {visibility: hidden;}
             header {visibility: hidden;}
-            
-            /* CARDS & CONTAINERS */
             div[data-testid="stMetric"], div[data-testid="stContainer"] {
-                background-color: #0F0F0F;
-                border: 1px solid #333;
-                border-radius: 6px;
-                padding: 15px;
-                color: white;
+                background-color: #0F0F0F; border: 1px solid #333; border-radius: 6px; padding: 15px; color: white;
             }
-            
-            /* CHAT BUBBLES */
-            .user-msg { 
-                background-color: #FFFFFF; color: #000000; 
-                padding: 10px 15px; border-radius: 12px 12px 0 12px; 
-                margin: 5px 0; text-align: right; font-weight: 600; font-size: 0.9rem;
-            }
-            .bot-msg { 
-                background-color: #1A1A1A; border: 1px solid #333; 
-                color: #DDD; padding: 10px 15px; border-radius: 12px 12px 12px 0; 
-                margin: 5px 0; font-family: monospace; font-size: 0.85rem;
-            }
-            
-            /* ALERTS & BADGES */
-            .critical-badge {
-                background-color: #FFFFFF; color: #000000; font-weight: 900;
-                padding: 4px 8px; border-radius: 4px; font-size: 0.75rem;
-            }
-            
-            /* TABS */
+            .user-msg { background-color: #FFFFFF; color: #000000; padding: 10px 15px; border-radius: 12px 12px 0 12px; margin: 5px 0; text-align: right; font-weight: 600; font-size: 0.9rem; }
+            .bot-msg { background-color: #1A1A1A; border: 1px solid #333; color: #DDD; padding: 10px 15px; border-radius: 12px 12px 12px 0; margin: 5px 0; font-family: monospace; font-size: 0.85rem; }
+            .critical-badge { background-color: #FFFFFF; color: #000000; font-weight: 900; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; }
             button[data-baseweb="tab"] { color: #888; }
             button[data-baseweb="tab"][aria-selected="true"] { color: #FFF; border-bottom-color: #FFF; }
         </style>
@@ -71,12 +45,11 @@ try:
     DATABASE = st.secrets["DATABASE"]
     USERNAME = st.secrets["USERNAME"]
     PASSWORD = st.secrets["PASSWORD"]
-    # Optionals
     AI_KEY = st.secrets.get("AZURE_AI_KEY", "")
     AI_ENDPOINT = st.secrets.get("AZURE_AI_ENDPOINT", "")
     DISCORD_URL = st.secrets.get("DISCORD_WEBHOOK_URL", "")
 except FileNotFoundError:
-    st.error("Secrets not found! Please check Streamlit Cloud settings.")
+    st.error("Secrets not found!")
     st.stop()
 
 # --- 3. DATABASE CONNECTION ---
@@ -96,32 +69,36 @@ def run_sentinel_analysis(text_input):
     except Exception:
         return 0.0, ["Connection Error"]
 
-# --- 5. DATA LOADERS (STABLE MODE: SIMULATED BPM) ---
+# --- 5. DATA LOADERS (STABLE CHECKPOINT LOGIC) ---
 def load_data():
     try:
-        engine = get_db_connection()
-        with engine.connect() as conn:
-            query = text("SELECT * FROM nurses")
-            df = pd.read_sql(query, conn)
+        with get_db_connection().connect() as conn:
+            df = pd.read_sql(text("SELECT * FROM nurses"), conn)
             
             if 'fatigue_risk' in df.columns: df.rename(columns={'fatigue_risk': 'incident_probability'}, inplace=True)
             if 'status' in df.columns: df['status'] = df['status'].str.strip()
 
-            first_names = ["Sarah", "Mike", "Jessica", "David", "Emily", "Robert", "Jennifer", "William", "Lisa", "James"]
-            last_names = ["Chen", "Smith", "Patel", "Johnson", "Kim", "Garcia", "Singh", "Miller", "Wong", "Jones"]
+            # Expanded names list to reduce duplicates
+            first_names = ["Sarah", "Mike", "Jessica", "David", "Emily", "Robert", "Jennifer", "William", "Lisa", "James", "Maria", "Daniel", "Linda", "Kevin", "Susan", "Thomas"]
+            last_names = ["Chen", "Smith", "Patel", "Johnson", "Kim", "Garcia", "Singh", "Miller", "Wong", "Jones", "Rodriguez", "Lee", "Martinez", "Anderson", "Taylor", "Wilson"]
             depts = ['ICU', 'ER', 'Pediatrics', 'Oncology', 'Surgical Ward']
             
-            def generate_heuristic_profile(nid):
-                random.seed(nid)
-                full_name = f"{random.choice(first_names)} {random.choice(last_names)}"
-                dept = depts[nid % len(depts)]
+            def gen_profile(nid):
+                # USE HASH INSTEAD OF RANDOM FOR 100% STABILITY
+                # This prevents "James" becoming "David" on page reload
+                fn_idx = nid % len(first_names)
+                ln_idx = (nid * 7) % len(last_names)
+                fn = f"{first_names[fn_idx]} {last_names[ln_idx]}"
+                
+                dept = depts[nid % 5]
                 base_shift = 6 + (nid % 10) 
-                hours_on_shift = np.round(base_shift + random.uniform(0, 2), 1)
-                # STABILITY FIX: Calculate BPM in Python to prevent DB Sort Glitches
-                bpm = int(65 + (hours_on_shift * 2) + random.randint(-5, 5))
-                return full_name, dept, hours_on_shift, bpm
+                hours_on_shift = np.round(base_shift + (nid % 3 * 0.5), 1)
+                
+                # Checkpoint Logic: Calculate BPM in Python (Stable)
+                bpm = int(65 + (hours_on_shift * 2) + (nid % 7))
+                return fn, dept, hours_on_shift, bpm
 
-            df['Full_Name'], df['Department'], df['Hours_On_Shift'], df['BPM'] = zip(*df['nurse_id'].apply(generate_heuristic_profile))
+            df['Full_Name'], df['Department'], df['Hours_On_Shift'], df['BPM'] = zip(*df['nurse_id'].apply(gen_profile))
             
             def calculate_risk(row):
                 if row['status'] == 'Relieved': return 12
@@ -130,7 +107,7 @@ def load_data():
                 return int(min(max(risk_score, 5), 99))
 
             df['Calculated_Risk'] = df.apply(calculate_risk, axis=1)
-            # This ensures Voice Updates (which write to DB) are respected
+            # Take max to respect Voice Updates
             df['incident_probability'] = df[['incident_probability', 'Calculated_Risk']].max(axis=1)
 
         return df
@@ -138,167 +115,134 @@ def load_data():
 
 def load_audit_logs():
     try:
-        engine = get_db_connection()
-        with engine.connect() as conn:
-            query = text("SELECT TOP 50 * FROM audit_logs ORDER BY timestamp DESC")
-            df = pd.read_sql(query, conn)
-        return df
-    except Exception: return pd.DataFrame() 
+        with get_db_connection().connect() as conn:
+            return pd.read_sql(text("SELECT TOP 50 * FROM audit_logs ORDER BY timestamp DESC"), conn)
+    except: return pd.DataFrame() 
 
-# --- 6. ACTIONS (SQL + DISCORD) ---
+# --- 6. ACTIONS ---
 def relieve_nurse_in_db(fatigued_id, risk_val, replacement_name, is_ai=False):
     try:
-        engine = get_db_connection()
-        with engine.begin() as conn: 
-            sql_update = text("UPDATE nurses SET fatigue_risk = 12, status = 'Relieved' WHERE nurse_id = :id")
-            conn.execute(sql_update, {"id": fatigued_id})
+        with get_db_connection().begin() as conn: 
+            conn.execute(text("UPDATE nurses SET fatigue_risk = 12, status = 'Relieved' WHERE nurse_id = :id"), {"id": fatigued_id})
             
-            action_type = 'AI_AUTO_RESOLVE' if is_ai else 'MANUAL_SWAP'
-            log_msg = f"Auto-Swap with {replacement_name}" if is_ai else f"Swapped with {replacement_name}"
+            action = 'AI_AUTO_RESOLVE' if is_ai else 'MANUAL_SWAP'
+            msg = f"Auto-Swap with {replacement_name}" if is_ai else f"Swapped with {replacement_name}"
             
-            sql_log = text("""
-                IF OBJECT_ID('audit_logs', 'U') IS NOT NULL
-                INSERT INTO audit_logs (nurse_id, action_type, risk_level_at_time, manager_action)
-                VALUES (:id, :type, :risk, :action)
-            """)
-            conn.execute(sql_log, {"id": fatigued_id, "type": action_type, "risk": risk_val, "action": log_msg})
+            conn.execute(text("INSERT INTO audit_logs (nurse_id, action_type, risk_level_at_time, manager_action) VALUES (:id, :t, :r, :a)"), 
+                         {"id": fatigued_id, "t": action, "r": risk_val, "a": msg})
 
         if DISCORD_URL:
-            try:
-                discord_msg = f"🚨 **SHIFTGUARD ALERT**\n**Nurse {fatigued_id}** relieved by **{replacement_name}**.\nRisk Level: **{risk_val}%**"
-                requests.post(DISCORD_URL, json={"content": discord_msg}, timeout=1)
-            except: pass 
+            try: requests.post(DISCORD_URL, json={"content": f"🚨 **SHIFTGUARD ALERT**\nNurse {fatigued_id} relieved by {replacement_name}. Risk: {risk_val}%"}, timeout=1)
+            except: pass
         return True
-    except Exception: return False
+    except: return False
 
 def reset_simulation():
     try:
-        engine = get_db_connection()
-        with engine.begin() as conn:
+        with get_db_connection().begin() as conn:
             conn.execute(text("UPDATE nurses SET status = 'Active', fatigue_risk = 15"))
-            conn.execute(text("UPDATE nurses SET fatigue_risk = 98 WHERE nurse_id IN (34, 68, 93, 29, 55)")) 
+            conn.execute(text("UPDATE nurses SET fatigue_risk = 98 WHERE nurse_id IN (9, 19, 38)")) 
             conn.execute(text("TRUNCATE TABLE audit_logs"))
-            # Pre-fill logs for "Show Don't Tell"
             conn.execute(text("INSERT INTO audit_logs (nurse_id, action_type, risk_level_at_time, manager_action) VALUES (101, 'AI_AUTO_RESOLVE', 88, 'Auto-Swap with Float Pool')"))
         return True
-    except Exception: return False
+    except: return False
 
-# --- MAIN APP LAYOUT ---
-st.title("SHIFTGUARD")
-st.caption("ENTERPRISE RISK COMMAND CENTER | PROD-US-EAST")
+# --- MAIN UI LAYOUT ---
+c1, c2 = st.columns([6, 2])
+with c1:
+    st.title("SHIFTGUARD")
+    st.caption("ENTERPRISE RISK COMMAND CENTER | PROD-US-EAST")
+with c2:
+    st.markdown("<br><div style='text-align:right; font-family:monospace; color:#4CAF50'>🟢 SYSTEM ONLINE</div>", unsafe_allow_html=True)
+
+st.divider()
 
 with st.sidebar:
     st.header("Admin Console")
     if st.button("🔄 RESET SIMULATION", type="primary"):
-        with st.spinner("Resetting Database..."):
-            if reset_simulation():
-                st.success("Database Reset!")
-                time.sleep(1)
-                st.rerun()
+        reset_simulation()
+        st.rerun()
 
 tab1, tab2 = st.tabs(["🔴 Live Operations", "📊 Analytics & Voice"])
 
-# --- TAB 1: EXACT CHECKPOINT CODE (STABLE) ---
+# --- TAB 1: CHECKPOINT LOGIC (With Safety Belt) ---
 with tab1:
     df = load_data()
     if df is not None:
         active_risk_df = df[(df['incident_probability'] >= 85) & (df['status'] != 'Relieved')]
-        active_risk_count = len(active_risk_df)
+        count = len(active_risk_df)
         
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total Staff", len(df), "Active on Floor")
-        m2.metric("Critical Alerts", active_risk_count, "Immediate Action Reqd", delta_color="inverse")
+        m2.metric("Critical Alerts", count, "Immediate Action Reqd", delta_color="inverse")
         m3.metric("Avg Unit BPM", f"{int(df['BPM'].mean())}", "+12% vs Baseline", delta_color="inverse")
         m4.metric("System Latency", "24ms", "Azure SQL")
 
-        if active_risk_count > 0:
-            st.markdown("### ⚡ AI Counter-Measures")
-            with st.expander("🤖 **RECOMMENDATION ENGINE: Heuristic Optimization Detected**", expanded=True):
+        if count > 0:
+            with st.expander("🤖 **RECOMMENDATION ENGINE**", expanded=True):
                 c1, c2 = st.columns([3, 1])
-                with c1:
-                    st.markdown(f"**Status:** <span style='color:#ff4b4b'>CRITICAL INSTABILITY</span><br>Heuristic Model identified **{active_risk_count}** anomalies.", unsafe_allow_html=True)
-                with c2:
-                    if st.button("🚀 EXECUTE AUTO-FIX", type="primary", use_container_width=True):
-                        status_box = st.empty()
-                        progress_bar = st.progress(0)
-                        logs = []
-                        
-                        safe_staff_pool = df[df['incident_probability'] < 50]['Full_Name'].tolist()
-                        random.shuffle(safe_staff_pool) 
-
-                        for i, (idx, nurse) in enumerate(active_risk_df.iterrows()):
-                            time.sleep(0.4)
-                            if len(safe_staff_pool) > 0: replacement = safe_staff_pool.pop(0)
-                            else: replacement = "Float Pool RN (External)"
-                                
-                            logs.append(f"[AI] Analyzing ID {nurse['nurse_id']}... Hours: {nurse['Hours_On_Shift']} | BPM: {nurse['BPM']} -> RISK {nurse['incident_probability']}%")
-                            status_box.code("\n".join(logs), language="bash")
-                            time.sleep(0.3)
-                            logs.append(f"[AI] >> Allocating Resource: {replacement} (Risk: Low)... SWAP EXECUTED.")
-                            status_box.code("\n".join(logs), language="bash")
-                            progress_bar.progress((i + 1) / active_risk_count)
-                            relieve_nurse_in_db(nurse['nurse_id'], nurse['incident_probability'], replacement, is_ai=True)
-                        
-                        st.success("✅ OPTIMIZATION COMPLETE.")
-                        time.sleep(1)
-                        st.rerun()
+                c1.markdown(f"**Status:** <span style='color:#ff4b4b'>CRITICAL INSTABILITY</span> - {count} anomalies detected.", unsafe_allow_html=True)
+                if c2.button("🚀 EXECUTE AUTO-FIX", type="primary", use_container_width=True):
+                    safe = df[df['incident_probability'] < 50]['Full_Name'].tolist()
+                    random.shuffle(safe)
+                    prog = st.progress(0)
+                    for i, (idx, row) in enumerate(active_risk_df.iterrows()):
+                        time.sleep(0.3)
+                        rep = safe.pop(0) if safe else "Float Pool RN"
+                        relieve_nurse_in_db(row['nurse_id'], row['incident_probability'], rep, True)
+                        prog.progress((i+1)/count)
+                    st.success("Optimization Complete.")
+                    time.sleep(1)
+                    st.rerun()
 
         st.divider()
-
         st.subheader("🚨 High Priority Interventions")
-        critical_mask = (df['incident_probability'] >= 90) | (df['status'] == 'Relieved')
-        critical_nurses = df[critical_mask].sort_values('incident_probability', ascending=False)
         
-        safe_nurses = df[df['incident_probability'] < 50].sort_values('incident_probability')
-        if safe_nurses.empty: safe_nurses = df.sort_values('incident_probability', ascending=True).head(5)
-        replacement_options = safe_nurses.apply(lambda x: f"{x['Full_Name']} (ID: {x['nurse_id']} | Risk: {x['incident_probability']}%)", axis=1).tolist()
+        # Sort logic
+        crit = df[(df['incident_probability'] >= 90) | (df['status'] == 'Relieved')].sort_values('incident_probability', ascending=False)
+        safe = df[df['incident_probability'] < 50].sort_values('incident_probability')
+        if safe.empty: safe = df.sort_values('incident_probability', ascending=True).head(5)
+        safe_opts = safe.apply(lambda x: f"{x['Full_Name']} [ID: {x['nurse_id']}] (Risk: {x['incident_probability']}%)", axis=1).tolist()
 
-        if critical_nurses.empty:
-            st.success("✅ No critical fatigue risks detected. Unit is operating safely.")
+        if crit.empty: st.success("✅ Unit Safe")
         else:
-            for i, (idx, nurse) in enumerate(critical_nurses.iterrows()):
-                nurse_id = int(nurse['nurse_id'])
-                risk_val = int(nurse['incident_probability'])
+            for i, (idx, row) in enumerate(crit.iterrows()):
+                # CAPTURE UNIQUE ID
+                nurse_id = row['nurse_id']
                 
                 with st.container(border=True):
                     c1, c2, c3 = st.columns([1, 2, 1.2]) 
-                    with c1:
+                    with c1: 
                         st.markdown(f"### 🩺 **{nurse_id}**")
-                        st.caption(nurse['Department'])
+                        st.caption(row['Department'])
                     with c2:
-                        st.markdown(f"**{nurse['Full_Name']}**")
-                        if nurse['status'] == 'Relieved':
-                            st.success("✅ **RELIEVED**")
-                        else:
-                            st.progress(risk_val / 100, text=f"Risk: {risk_val}% | Shift: {nurse['Hours_On_Shift']}h")
-                            with st.expander("📉 View Risk Factors"):
-                                st.write(f"**Risk Model Calculation:**")
-                                st.caption(f"🕒 Shift Fatigue: {(nurse['Hours_On_Shift'] * 4.5):.1f} pts")
-                                st.caption(f"💓 Physio Stress: {(max(0, nurse['BPM']-70)*1.2):.1f} pts")
-
+                        st.markdown(f"**{row['Full_Name']}**")
+                        if row['status'] == 'Relieved': st.success("✅ **RELIEVED**")
+                        else: st.progress(row['incident_probability']/100, text=f"Risk: {row['incident_probability']}%")
+                        with st.expander("📉 View Risk Factors"):
+                            st.caption(f"Shift: {row['Hours_On_Shift']}h | **Heart Rate: {row['BPM']} BPM**")
                     with c3:
-                        if nurse['status'] != 'Relieved':
+                        if row['status'] != 'Relieved':
                             with st.popover("⚡ MANAGE SWAP", use_container_width=True):
-                                sel = st.selectbox("Available Staff:", replacement_options, key=f"sel_{i}")
-                                rep_name = sel.split(" (")[0] if sel else "Unknown"
-                                if st.button(f"Confirm Swap", key=f"conf_{i}", type="primary"):
-                                    relieve_nurse_in_db(nurse_id, risk_val, rep_name)
+                                # UNIQUE KEY HERE PREVENTS GLITCH
+                                sel = st.selectbox("Staff:", safe_opts, key=f"sel_{nurse_id}")
+                                rep_name = sel.split(" [")[0] if sel else "Unknown"
+                                # UNIQUE KEY HERE PREVENTS GLITCH
+                                if st.button("Confirm", key=f"btn_{nurse_id}", type="primary"):
+                                    relieve_nurse_in_db(nurse_id, row['incident_probability'], rep_name)
                                     st.rerun()
-                        else:
-                            st.button("Log Archived", disabled=True, key=f"d_{i}")
 
-        st.subheader("📋 Staff Roster (Heuristic Analysis)")
+        st.subheader("📋 Staff Roster")
         st.dataframe(df[['nurse_id', 'Full_Name', 'Department', 'Hours_On_Shift', 'BPM', 'incident_probability', 'status']].sort_values('incident_probability', ascending=False), use_container_width=True, hide_index=True)
 
-# --- TAB 2: ANALYTICS + NEW VOICE FEATURES ---
+# --- TAB 2: ANALYTICS + VOICE ---
 with tab2:
-    st.header("📊 Enterprise Analytics & Sentinel")
-    
-    # --- VOICE FEATURE INSERTED HERE ---
+    st.header("📊 Analytics")
     st.subheader("🧠 Sentinel: Voice-to-Risk Engine")
+    
     with st.container(border=True):
         st.info("ℹ️ **Mobile App Integration:** Select input method.")
-        nid = st.selectbox("Nurse ID (for log entry)", df['nurse_id'].unique())
+        nid = st.selectbox("Nurse ID", df['nurse_id'].unique())
         
         in_mode = st.radio("Input:", ["🎙️ Voice (Mobile)", "⌨️ Manual Entry"], horizontal=True)
         transcript = ""
@@ -323,7 +267,6 @@ with tab2:
                             st.success(f"**Transcript:** {transcript}")
                             
                     except Exception as e:
-                        # FALLBACK MODE for FFmpeg issues
                         st.error(f"Conversion Failed (FFmpeg missing?): {e}")
                         st.warning("⚠️ Falling back to Simulation Mode for Demo...")
                         transcript = "I am struggling to keep my eyes open and feeling very dizzy. I need a break."
@@ -340,25 +283,19 @@ with tab2:
                 
                 if score > 0.7:
                     st.error("⚠️ CRITICAL. Updating Database...")
-                    engine = get_db_connection()
-                    with engine.begin() as conn:
-                        # We update fatigue_risk (which Tab 1 reads)
+                    with get_db_connection().begin() as conn:
                         conn.execute(text("UPDATE nurses SET fatigue_risk=99 WHERE nurse_id=:id"), {"id": nid})
                     time.sleep(1)
                     st.rerun()
-
+    
     st.divider()
-    
-    col_left, col_right = st.columns([2, 1])
-    with col_left:
-         st.subheader("📊 Unit Risk Distribution")
-         dept_risk = df.groupby('Department')['incident_probability'].mean().reset_index()
-         st.bar_chart(dept_risk, x="Department", y="incident_probability", color="#FF4B4B")
-         st.info("ℹ️ **Heuristic Insight:** ICU unit shows 15% higher stress factor (BPM > 90) than surgical ward.")
-    
-    with col_right:
-         st.header("⚖️ Audit Logs")
-         if st.button("Refresh Logs"): st.rerun()
-         audit_df = load_audit_logs()
-         if not audit_df.empty: st.dataframe(audit_df, use_container_width=True, hide_index=True)
-         else: st.info("No records found.")
+    if df is not None:
+        c1, c2 = st.columns(2)
+        with c1:
+             st.markdown("##### Fatigue Load")
+             d = df.groupby("Department")["incident_probability"].mean().reset_index()
+             st.bar_chart(d, x="Department", y="incident_probability", color="#FF4B4B")
+        with c2:
+             st.header("⚖️ Audit Logs")
+             if st.button("Refresh Logs"): st.rerun()
+             st.dataframe(load_audit_logs(), use_container_width=True)
