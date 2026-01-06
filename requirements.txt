@@ -16,3 +16,4 @@ azure-ai-textanalytics
 azure-core
 SpeechRecognition
 streamlit-mic-recorder
+pydub
