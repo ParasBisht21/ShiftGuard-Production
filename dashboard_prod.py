@@ -52,8 +52,10 @@ except FileNotFoundError:
     st.error("Secrets not found!")
     st.stop()
 
-# --- 3. DATABASE CONNECTION ---
-def get_db_connection():
+# --- 3. DATABASE CONNECTION (OPTIMIZED) ---
+# @st.cache_resource ensures we only create the engine ONCE, not every rerun.
+@st.cache_resource
+def get_db_engine():
     return create_engine(f"mssql+pymssql://{USERNAME}:{PASSWORD}@{SERVER}/{DATABASE}")
 
 # --- 4. SENTINEL ENGINE (Azure AI) ---
@@ -69,10 +71,13 @@ def run_sentinel_analysis(text_input):
     except Exception:
         return 0.0, ["Connection Error"]
 
-# --- 5. DATA LOADERS ---
+# --- 5. DATA LOADERS (OPTIMIZED) ---
+# @st.cache_data keeps the dataframe in memory. ttl=5 ensures it auto-refreshes every 5s if idle.
+@st.cache_data(ttl=5)
 def load_data():
     try:
-        with get_db_connection().connect() as conn:
+        # Use the cached engine
+        with get_db_engine().connect() as conn:
             df = pd.read_sql(text("SELECT * FROM nurses"), conn)
             
             if 'fatigue_risk' in df.columns: df.rename(columns={'fatigue_risk': 'incident_probability'}, inplace=True)
@@ -109,14 +114,17 @@ def load_data():
 
 def load_audit_logs():
     try:
-        with get_db_connection().connect() as conn:
+        with get_db_engine().connect() as conn:
             return pd.read_sql(text("SELECT TOP 50 * FROM audit_logs ORDER BY timestamp DESC"), conn)
     except: return pd.DataFrame() 
 
 # --- 6. ACTIONS ---
 def relieve_nurse_in_db(fatigued_id, risk_val, replacement_name, is_ai=False):
     try:
-        with get_db_connection().begin() as conn: 
+        # We must clear the cache so the user sees the update immediately
+        load_data.clear()
+        
+        with get_db_engine().begin() as conn: 
             conn.execute(text("UPDATE nurses SET fatigue_risk = 12, status = 'Relieved', bpm = 72 WHERE nurse_id = :id"), {"id": fatigued_id})
             action = 'AI_AUTO_RESOLVE' if is_ai else 'MANUAL_SWAP'
             msg = f"Auto-Swap with {replacement_name}" if is_ai else f"Swapped with {replacement_name}"
@@ -130,7 +138,8 @@ def relieve_nurse_in_db(fatigued_id, risk_val, replacement_name, is_ai=False):
 
 def reset_simulation():
     try:
-        with get_db_connection().begin() as conn:
+        load_data.clear()
+        with get_db_engine().begin() as conn:
             conn.execute(text("UPDATE nurses SET status = 'Active', fatigue_risk = 15, bpm = 75"))
             conn.execute(text("UPDATE nurses SET fatigue_risk = 98, bpm = 115 WHERE nurse_id IN (9, 19, 38)")) 
             conn.execute(text("TRUNCATE TABLE audit_logs"))
@@ -218,12 +227,14 @@ with tab1:
                     st.rerun()
 
         st.subheader("🚨 High Priority Interventions")
-        crit = df[(df['incident_probability'] >= 90) | (df['status'] == 'Relieved')].sort_values('incident_probability', ascending=False)
         
-        # --- FIX: RESTORED FALLBACK LOGIC ---
+        # --- STABLE SORT FIX (Risk DESC, then ID ASC) ---
+        crit = df[(df['incident_probability'] >= 90) | (df['status'] == 'Relieved')].sort_values(
+            ['incident_probability', 'nurse_id'], ascending=[False, True]
+        )
+        
         safe = df[df['incident_probability'] < 50].sort_values('incident_probability')
         if safe.empty: safe = df.sort_values('incident_probability', ascending=True).head(5)
-        # ------------------------------------
         
         safe_opts = safe.apply(lambda x: f"{x['Full_Name']} [ID: {x['nurse_id']}] (Risk: {x['incident_probability']}%)", axis=1).tolist()
         
@@ -237,15 +248,16 @@ with tab1:
                     if row['status'] == 'Relieved': c2.success("RELIEVED")
                     else: st.progress(row['incident_probability']/100, f"Risk: {row['incident_probability']}%")
                     
-                    # --- RESTORED RISK BREAKDOWN ---
                     with st.expander("📉 Risk Factors"):
                         st.caption(f"Shift: {row['Hours_On_Shift']}h | **Heart Rate: {row['bpm']} BPM**")
                     
                     if row['status'] != 'Relieved':
                         with c3.popover("Swap"):
-                            sel = st.selectbox("With:", safe_opts, key=f"s_{i}")
+                            # --- UNIQUE KEY FIX (Using Nurse ID) ---
+                            sel = st.selectbox("With:", safe_opts, key=f"sel_{row['nurse_id']}")
                             rep = sel.split(" [")[0] if sel else "Unknown"
-                            if st.button("Confirm", key=f"c_{i}"):
+                            
+                            if st.button("Confirm", key=f"btn_{row['nurse_id']}", type="primary"):
                                 relieve_nurse_in_db(row['nurse_id'], row['incident_probability'], rep)
                                 st.rerun()
 
@@ -260,31 +272,22 @@ with tab2:
         st.info("ℹ️ **Mobile App Integration:** Select input method.")
         nid = st.selectbox("Nurse ID", df['nurse_id'].unique())
         
-        # --- DUAL INPUT LOGIC ---
         in_mode = st.radio("Input:", ["🎙️ Voice (Mobile)", "⌨️ Manual Entry"], horizontal=True)
-        
         transcript = ""
         
         if "Voice" in in_mode:
             st.caption("Click to record audio via browser:")
-            # Capture WebM from Browser
             audio = mic_recorder(start_prompt="🎤 START RECORDING", stop_prompt="⏹️ STOP", just_once=False, key='recorder')
             
             if audio:
                 st.audio(audio['bytes'])
-                
-                # --- AUDIO CONVERSION LOGIC ---
                 with st.spinner("Processing Audio..."):
                     try:
-                        # 1. Convert bytes to AudioSegment
                         audio_segment = AudioSegment.from_file(io.BytesIO(audio['bytes']), format="webm")
-                        
-                        # 2. Export as WAV
                         wav_buffer = io.BytesIO()
                         audio_segment.export(wav_buffer, format="wav")
                         wav_buffer.seek(0)
                         
-                        # 3. Transcribe
                         r = sr.Recognizer()
                         with sr.AudioFile(wav_buffer) as source:
                             audio_content = r.record(source)
@@ -292,16 +295,14 @@ with tab2:
                             st.success(f"**Transcript:** {transcript}")
                             
                     except Exception as e:
-                        # FALLBACK FOR DEMO if FFmpeg missing
-                        st.error(f"Conversion Failed: {e}")
+                        # FALLBACK MODE
+                        st.error(f"Conversion Failed (FFmpeg missing?): {e}")
                         st.warning("⚠️ Falling back to Simulation Mode for Demo...")
                         transcript = "I am struggling to keep my eyes open and feeling very dizzy. I need a break."
                         st.success(f"**Transcript:** {transcript}")
-
         else:
             transcript = st.text_input("Log Entry:", placeholder="Type here...")
 
-        # EXECUTE ANALYSIS
         if transcript:
             if st.button("Analyze Input") or ("Voice" in in_mode):
                 score, phrases = run_sentinel_analysis(transcript)
@@ -313,6 +314,7 @@ with tab2:
                     st.error("⚠️ CRITICAL. Updating Database...")
                     with get_db_connection().begin() as conn:
                         conn.execute(text("UPDATE nurses SET fatigue_risk=99, bpm=110 WHERE nurse_id=:id"), {"id": nid})
+                    load_data.clear() # Clear cache on update
                     time.sleep(1)
                     st.rerun()
 
