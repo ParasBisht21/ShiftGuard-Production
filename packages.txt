@@ -2,3 +2,4 @@ unixodbc
 unixodbc-dev
 curl
 gnupg
+ffmpeg
