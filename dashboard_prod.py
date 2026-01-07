@@ -187,7 +187,7 @@ with tab1:
                     random.shuffle(safe)
                     prog = st.progress(0)
                     for i, (idx, row) in enumerate(active_risk_df.iterrows()):
-                        time.sleep(0.3)
+                        time.sleep(0.05)
                         rep = safe.pop(0) if safe else "Float Pool RN"
                         relieve_nurse_in_db(row['nurse_id'], row['incident_probability'], rep, True)
                         prog.progress((i+1)/count)
@@ -299,3 +299,4 @@ with tab2:
              st.header("⚖️ Audit Logs")
              if st.button("Refresh Logs"): st.rerun()
              st.dataframe(load_audit_logs(), use_container_width=True)
+
