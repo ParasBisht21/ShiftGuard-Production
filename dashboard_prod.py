@@ -22,16 +22,42 @@ st.set_page_config(page_title="ShiftGuard Enterprise", layout="wide", page_icon=
 def inject_custom_css():
     st.markdown("""
         <style>
+            /* GLOBAL MONOCHROME THEME */
             .stApp { background-color: #000000; color: #E5E5E5; font-family: 'Inter', sans-serif; }
+            
+            /* HIDE DEFAULT STREAMLIT CHROME */
             #MainMenu {visibility: hidden;}
             footer {visibility: hidden;}
             header {visibility: hidden;}
+            
+            /* CARDS & CONTAINERS */
             div[data-testid="stMetric"], div[data-testid="stContainer"] {
-                background-color: #0F0F0F; border: 1px solid #333; border-radius: 6px; padding: 15px; color: white;
+                background-color: #0F0F0F;
+                border: 1px solid #333;
+                border-radius: 6px;
+                padding: 15px;
+                color: white;
             }
-            .user-msg { background-color: #FFFFFF; color: #000000; padding: 10px 15px; border-radius: 12px 12px 0 12px; margin: 5px 0; text-align: right; font-weight: 600; font-size: 0.9rem; }
-            .bot-msg { background-color: #1A1A1A; border: 1px solid #333; color: #DDD; padding: 10px 15px; border-radius: 12px 12px 12px 0; margin: 5px 0; font-family: monospace; font-size: 0.85rem; }
-            .critical-badge { background-color: #FFFFFF; color: #000000; font-weight: 900; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; }
+            
+            /* CHAT BUBBLES */
+            .user-msg { 
+                background-color: #FFFFFF; color: #000000; 
+                padding: 10px 15px; border-radius: 12px 12px 0 12px; 
+                margin: 5px 0; text-align: right; font-weight: 600; font-size: 0.9rem;
+            }
+            .bot-msg { 
+                background-color: #1A1A1A; border: 1px solid #333; 
+                color: #DDD; padding: 10px 15px; border-radius: 12px 12px 12px 0; 
+                margin: 5px 0; font-family: monospace; font-size: 0.85rem;
+            }
+            
+            /* ALERTS & BADGES */
+            .critical-badge {
+                background-color: #FFFFFF; color: #000000; font-weight: 900;
+                padding: 4px 8px; border-radius: 4px; font-size: 0.75rem;
+            }
+            
+            /* TABS */
             button[data-baseweb="tab"] { color: #888; }
             button[data-baseweb="tab"][aria-selected="true"] { color: #FFF; border-bottom-color: #FFF; }
         </style>
@@ -45,11 +71,12 @@ try:
     DATABASE = st.secrets["DATABASE"]
     USERNAME = st.secrets["USERNAME"]
     PASSWORD = st.secrets["PASSWORD"]
+    # Optionals
     AI_KEY = st.secrets.get("AZURE_AI_KEY", "")
     AI_ENDPOINT = st.secrets.get("AZURE_AI_ENDPOINT", "")
     DISCORD_URL = st.secrets.get("DISCORD_WEBHOOK_URL", "")
 except FileNotFoundError:
-    st.error("Secrets not found!")
+    st.error("Secrets not found! Please check Streamlit Cloud settings.")
     st.stop()
 
 # --- 3. DATABASE CONNECTION ---
@@ -69,7 +96,7 @@ def run_sentinel_analysis(text_input):
     except Exception:
         return 0.0, ["Connection Error"]
 
-# --- 5. DATA LOADERS (STABLE CHECKPOINT LOGIC) ---
+# --- 5. DATA LOADERS (STABLE MODE: SIMULATED BPM) ---
 def load_data():
     try:
         with get_db_connection().connect() as conn:
@@ -78,13 +105,12 @@ def load_data():
             if 'fatigue_risk' in df.columns: df.rename(columns={'fatigue_risk': 'incident_probability'}, inplace=True)
             if 'status' in df.columns: df['status'] = df['status'].str.strip()
 
-            # Expanded names list to reduce duplicates
             first_names = ["Sarah", "Mike", "Jessica", "David", "Emily", "Robert", "Jennifer", "William", "Lisa", "James", "Maria", "Daniel", "Linda", "Kevin", "Susan", "Thomas"]
             last_names = ["Chen", "Smith", "Patel", "Johnson", "Kim", "Garcia", "Singh", "Miller", "Wong", "Jones", "Rodriguez", "Lee", "Martinez", "Anderson", "Taylor", "Wilson"]
             depts = ['ICU', 'ER', 'Pediatrics', 'Oncology', 'Surgical Ward']
             
             def gen_profile(nid):
-                # USE HASH INSTEAD OF RANDOM FOR 100% STABILITY
+                # STABLE HASHING: Ensures ID 19 is ALWAYS "James Smith"
                 # This prevents "James" becoming "David" on page reload
                 fn_idx = nid % len(first_names)
                 ln_idx = (nid * 7) % len(last_names)
@@ -119,7 +145,7 @@ def load_audit_logs():
             return pd.read_sql(text("SELECT TOP 50 * FROM audit_logs ORDER BY timestamp DESC"), conn)
     except: return pd.DataFrame() 
 
-# --- 6. ACTIONS ---
+# --- 6. ACTIONS (SINGLE CALL) ---
 def relieve_nurse_in_db(fatigued_id, risk_val, replacement_name, is_ai=False):
     try:
         with get_db_connection().begin() as conn: 
@@ -165,7 +191,7 @@ with st.sidebar:
 
 tab1, tab2 = st.tabs(["🔴 Live Operations", "📊 Analytics & Voice"])
 
-# --- TAB 1: CHECKPOINT LOGIC (With Safety Belt) ---
+# --- TAB 1: LIVE OPERATIONS (FAST LOOP + SAFE SYNC) ---
 with tab1:
     df = load_data()
     if df is not None:
@@ -183,23 +209,41 @@ with tab1:
                 c1, c2 = st.columns([3, 1])
                 c1.markdown(f"**Status:** <span style='color:#ff4b4b'>CRITICAL INSTABILITY</span> - {count} anomalies detected.", unsafe_allow_html=True)
                 if c2.button("🚀 EXECUTE AUTO-FIX", type="primary", use_container_width=True):
-                    safe = df[df['incident_probability'] < 50]['Full_Name'].tolist()
-                    random.shuffle(safe)
-                    prog = st.progress(0)
-                    for i, (idx, row) in enumerate(active_risk_df.iterrows()):
-                        time.sleep(0.05)
-                        rep = safe.pop(0) if safe else "Float Pool RN"
-                        relieve_nurse_in_db(row['nurse_id'], row['incident_probability'], rep, True)
-                        prog.progress((i+1)/count)
+                    status_box = st.empty()
+                    progress_bar = st.progress(0)
+                    logs = []
+                    
+                    safe_staff_pool = df[df['incident_probability'] < 50]['Full_Name'].tolist()
+                    random.shuffle(safe_staff_pool) 
+
+                    # --- OPTIMIZATION: BATCH CONNECTION ---
+                    engine = get_db_connection()
+                    with engine.begin() as conn:
+                        for i, (idx, row) in enumerate(active_risk_df.iterrows()):
+                            # Ultra-fast animation sleep
+                            time.sleep(0.02) 
+                            
+                            rep = safe_staff_pool.pop(0) if safe_staff_pool else "Float Pool RN"
+                            
+                            logs.append(f"[AI] Fixing {row['nurse_id']}... Assigned: {rep}")
+                            status_box.code("\n".join(logs[-3:]), language="bash")
+                            progress_bar.progress((i+1)/count)
+
+                            # Execute Update Reusing Connection
+                            conn.execute(text("UPDATE nurses SET fatigue_risk = 12, status = 'Relieved' WHERE nurse_id = :id"), {"id": row['nurse_id']})
+                            conn.execute(text("INSERT INTO audit_logs (nurse_id, action_type, risk_level_at_time, manager_action) VALUES (:id, 'AI_AUTO_RESOLVE', :risk, :msg)"), 
+                                         {"id": row['nurse_id'], "risk": row['incident_probability'], "msg": f"Auto-Swap with {rep}"})
+                    
                     st.success("Optimization Complete.")
-                    time.sleep(1)
+                    time.sleep(0.5) 
                     st.rerun()
 
         st.divider()
         st.subheader("🚨 High Priority Interventions")
         
-        # Sort logic
+        # Sort logic: Risk DESC
         crit = df[(df['incident_probability'] >= 90) | (df['status'] == 'Relieved')].sort_values('incident_probability', ascending=False)
+        
         safe = df[df['incident_probability'] < 50].sort_values('incident_probability')
         if safe.empty: safe = df.sort_values('incident_probability', ascending=True).head(5)
         safe_opts = safe.apply(lambda x: f"{x['Full_Name']} [ID: {x['nurse_id']}] (Risk: {x['incident_probability']}%)", axis=1).tolist()
@@ -207,7 +251,6 @@ with tab1:
         if crit.empty: st.success("✅ Unit Safe")
         else:
             for i, (idx, row) in enumerate(crit.iterrows()):
-                # CAPTURE UNIQUE ID
                 nurse_id = row['nurse_id']
                 
                 with st.container(border=True):
@@ -224,10 +267,9 @@ with tab1:
                     with c3:
                         if row['status'] != 'Relieved':
                             with st.popover("⚡ MANAGE SWAP", use_container_width=True):
-                                # UNIQUE KEY HERE PREVENTS GLITCH
+                                # UNIQUE ID KEYS (Prevents Glitch)
                                 sel = st.selectbox("Staff:", safe_opts, key=f"sel_{nurse_id}")
                                 rep_name = sel.split(" [")[0] if sel else "Unknown"
-                                # UNIQUE KEY HERE PREVENTS GLITCH
                                 if st.button("Confirm", key=f"btn_{nurse_id}", type="primary"):
                                     relieve_nurse_in_db(nurse_id, row['incident_probability'], rep_name)
                                     st.rerun()
@@ -299,4 +341,3 @@ with tab2:
              st.header("⚖️ Audit Logs")
              if st.button("Refresh Logs"): st.rerun()
              st.dataframe(load_audit_logs(), use_container_width=True)
-
