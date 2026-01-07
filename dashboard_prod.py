@@ -96,7 +96,7 @@ def run_sentinel_analysis(text_input):
     except Exception:
         return 0.0, ["Connection Error"]
 
-# --- 5. DATA LOADERS (STABLE MODE: SIMULATED BPM) ---
+# --- 5. DATA LOADERS (STABLE MODE) ---
 def load_data():
     try:
         with get_db_connection().connect() as conn:
@@ -111,7 +111,6 @@ def load_data():
             
             def gen_profile(nid):
                 # STABLE HASHING: Ensures ID 19 is ALWAYS "James Smith"
-                # This prevents "James" becoming "David" on page reload
                 fn_idx = nid % len(first_names)
                 ln_idx = (nid * 7) % len(last_names)
                 fn = f"{first_names[fn_idx]} {last_names[ln_idx]}"
@@ -191,7 +190,7 @@ with st.sidebar:
 
 tab1, tab2 = st.tabs(["🔴 Live Operations", "📊 Analytics & Voice"])
 
-# --- TAB 1: LIVE OPERATIONS (FAST LOOP + SAFE SYNC) ---
+# --- TAB 1: LIVE OPERATIONS (FAST LOOP + SAFE SYNC + DISCORD) ---
 with tab1:
     df = load_data()
     if df is not None:
@@ -216,11 +215,11 @@ with tab1:
                     safe_staff_pool = df[df['incident_probability'] < 50]['Full_Name'].tolist()
                     random.shuffle(safe_staff_pool) 
 
-                    # --- OPTIMIZATION: BATCH CONNECTION ---
+                    # --- FAST LOOP: BATCH CONNECTION ---
                     engine = get_db_connection()
                     with engine.begin() as conn:
                         for i, (idx, row) in enumerate(active_risk_df.iterrows()):
-                            # Ultra-fast animation sleep
+                            # Ultra-fast animation
                             time.sleep(0.02) 
                             
                             rep = safe_staff_pool.pop(0) if safe_staff_pool else "Float Pool RN"
@@ -229,11 +228,18 @@ with tab1:
                             status_box.code("\n".join(logs[-3:]), language="bash")
                             progress_bar.progress((i+1)/count)
 
-                            # Execute Update Reusing Connection
+                            # 1. Execute SQL Update (Fast)
                             conn.execute(text("UPDATE nurses SET fatigue_risk = 12, status = 'Relieved' WHERE nurse_id = :id"), {"id": row['nurse_id']})
                             conn.execute(text("INSERT INTO audit_logs (nurse_id, action_type, risk_level_at_time, manager_action) VALUES (:id, 'AI_AUTO_RESOLVE', :risk, :msg)"), 
                                          {"id": row['nurse_id'], "risk": row['incident_probability'], "msg": f"Auto-Swap with {rep}"})
-                    
+                            
+                            # 2. Fire Discord Notification (Fast Timeout)
+                            if DISCORD_URL:
+                                try:
+                                    msg = f"🚨 **SHIFTGUARD AUTO-FIX**\nNurse **{row['nurse_id']}** swapped with **{rep}**.\nRisk Level: {row['incident_probability']}%"
+                                    requests.post(DISCORD_URL, json={"content": msg}, timeout=0.5)
+                                except: pass
+
                     st.success("Optimization Complete.")
                     time.sleep(0.5) 
                     st.rerun()
