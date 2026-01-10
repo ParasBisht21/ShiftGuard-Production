@@ -22,42 +22,16 @@ st.set_page_config(page_title="ShiftGuard Enterprise", layout="wide", page_icon=
 def inject_custom_css():
     st.markdown("""
         <style>
-            /* GLOBAL MONOCHROME THEME */
             .stApp { background-color: #000000; color: #E5E5E5; font-family: 'Inter', sans-serif; }
-            
-            /* HIDE DEFAULT STREAMLIT CHROME */
             #MainMenu {visibility: hidden;}
             footer {visibility: hidden;}
             header {visibility: hidden;}
-            
-            /* CARDS & CONTAINERS */
             div[data-testid="stMetric"], div[data-testid="stContainer"] {
-                background-color: #0F0F0F;
-                border: 1px solid #333;
-                border-radius: 6px;
-                padding: 15px;
-                color: white;
+                background-color: #0F0F0F; border: 1px solid #333; border-radius: 6px; padding: 15px; color: white;
             }
-            
-            /* CHAT BUBBLES */
-            .user-msg { 
-                background-color: #FFFFFF; color: #000000; 
-                padding: 10px 15px; border-radius: 12px 12px 0 12px; 
-                margin: 5px 0; text-align: right; font-weight: 600; font-size: 0.9rem;
-            }
-            .bot-msg { 
-                background-color: #1A1A1A; border: 1px solid #333; 
-                color: #DDD; padding: 10px 15px; border-radius: 12px 12px 12px 0; 
-                margin: 5px 0; font-family: monospace; font-size: 0.85rem;
-            }
-            
-            /* ALERTS & BADGES */
-            .critical-badge {
-                background-color: #FFFFFF; color: #000000; font-weight: 900;
-                padding: 4px 8px; border-radius: 4px; font-size: 0.75rem;
-            }
-            
-            /* TABS */
+            .user-msg { background-color: #FFFFFF; color: #000000; padding: 10px 15px; border-radius: 12px 12px 0 12px; margin: 5px 0; text-align: right; font-weight: 600; font-size: 0.9rem; }
+            .bot-msg { background-color: #1A1A1A; border: 1px solid #333; color: #DDD; padding: 10px 15px; border-radius: 12px 12px 12px 0; margin: 5px 0; font-family: monospace; font-size: 0.85rem; }
+            .critical-badge { background-color: #FFFFFF; color: #000000; font-weight: 900; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; }
             button[data-baseweb="tab"] { color: #888; }
             button[data-baseweb="tab"][aria-selected="true"] { color: #FFF; border-bottom-color: #FFF; }
         </style>
@@ -71,7 +45,6 @@ try:
     DATABASE = st.secrets["DATABASE"]
     USERNAME = st.secrets["USERNAME"]
     PASSWORD = st.secrets["PASSWORD"]
-    # Optionals
     AI_KEY = st.secrets.get("AZURE_AI_KEY", "")
     AI_ENDPOINT = st.secrets.get("AZURE_AI_ENDPOINT", "")
     DISCORD_URL = st.secrets.get("DISCORD_WEBHOOK_URL", "")
@@ -110,16 +83,13 @@ def load_data():
             depts = ['ICU', 'ER', 'Pediatrics', 'Oncology', 'Surgical Ward']
             
             def gen_profile(nid):
-                # STABLE HASHING: Ensures ID 19 is ALWAYS "James Smith"
+                # STABLE HASHING
                 fn_idx = nid % len(first_names)
                 ln_idx = (nid * 7) % len(last_names)
                 fn = f"{first_names[fn_idx]} {last_names[ln_idx]}"
-                
                 dept = depts[nid % 5]
                 base_shift = 6 + (nid % 10) 
                 hours_on_shift = np.round(base_shift + (nid % 3 * 0.5), 1)
-                
-                # Checkpoint Logic: Calculate BPM in Python (Stable)
                 bpm = int(65 + (hours_on_shift * 2) + (nid % 7))
                 return fn, dept, hours_on_shift, bpm
 
@@ -132,7 +102,6 @@ def load_data():
                 return int(min(max(risk_score, 5), 99))
 
             df['Calculated_Risk'] = df.apply(calculate_risk, axis=1)
-            # Take max to respect Voice Updates
             df['incident_probability'] = df[['incident_probability', 'Calculated_Risk']].max(axis=1)
 
         return df
@@ -144,18 +113,15 @@ def load_audit_logs():
             return pd.read_sql(text("SELECT TOP 50 * FROM audit_logs ORDER BY timestamp DESC"), conn)
     except: return pd.DataFrame() 
 
-# --- 6. ACTIONS (SINGLE CALL) ---
+# --- 6. ACTIONS ---
 def relieve_nurse_in_db(fatigued_id, risk_val, replacement_name, is_ai=False):
     try:
         with get_db_connection().begin() as conn: 
             conn.execute(text("UPDATE nurses SET fatigue_risk = 12, status = 'Relieved' WHERE nurse_id = :id"), {"id": fatigued_id})
-            
             action = 'AI_AUTO_RESOLVE' if is_ai else 'MANUAL_SWAP'
             msg = f"Auto-Swap with {replacement_name}" if is_ai else f"Swapped with {replacement_name}"
-            
             conn.execute(text("INSERT INTO audit_logs (nurse_id, action_type, risk_level_at_time, manager_action) VALUES (:id, :t, :r, :a)"), 
                          {"id": fatigued_id, "t": action, "r": risk_val, "a": msg})
-
         if DISCORD_URL:
             try: requests.post(DISCORD_URL, json={"content": f"🚨 **SHIFTGUARD ALERT**\nNurse {fatigued_id} relieved by {replacement_name}. Risk: {risk_val}%"}, timeout=1)
             except: pass
@@ -188,11 +154,14 @@ with st.sidebar:
         reset_simulation()
         st.rerun()
 
+# --- FIX: LOAD DATA GLOBALLY ---
+# Moving this OUT of Tab 1 ensures both tabs can access it
+df = load_data()
+
 tab1, tab2 = st.tabs(["🔴 Live Operations", "📊 Analytics & Voice"])
 
-# --- TAB 1: LIVE OPERATIONS (FAST LOOP + SAFE SYNC + DISCORD) ---
+# --- TAB 1: LIVE OPERATIONS ---
 with tab1:
-    df = load_data()
     if df is not None:
         active_risk_df = df[(df['incident_probability'] >= 85) & (df['status'] != 'Relieved')]
         count = len(active_risk_df)
@@ -215,11 +184,9 @@ with tab1:
                     safe_staff_pool = df[df['incident_probability'] < 50]['Full_Name'].tolist()
                     random.shuffle(safe_staff_pool) 
 
-                    # --- FAST LOOP: BATCH CONNECTION ---
                     engine = get_db_connection()
                     with engine.begin() as conn:
                         for i, (idx, row) in enumerate(active_risk_df.iterrows()):
-                            # Ultra-fast animation
                             time.sleep(0.02) 
                             
                             rep = safe_staff_pool.pop(0) if safe_staff_pool else "Float Pool RN"
@@ -228,12 +195,10 @@ with tab1:
                             status_box.code("\n".join(logs[-3:]), language="bash")
                             progress_bar.progress((i+1)/count)
 
-                            # 1. Execute SQL Update (Fast)
                             conn.execute(text("UPDATE nurses SET fatigue_risk = 12, status = 'Relieved' WHERE nurse_id = :id"), {"id": row['nurse_id']})
                             conn.execute(text("INSERT INTO audit_logs (nurse_id, action_type, risk_level_at_time, manager_action) VALUES (:id, 'AI_AUTO_RESOLVE', :risk, :msg)"), 
                                          {"id": row['nurse_id'], "risk": row['incident_probability'], "msg": f"Auto-Swap with {rep}"})
                             
-                            # 2. Fire Discord Notification (Fast Timeout)
                             if DISCORD_URL:
                                 try:
                                     msg = f"🚨 **SHIFTGUARD AUTO-FIX**\nNurse **{row['nurse_id']}** swapped with **{rep}**.\nRisk Level: {row['incident_probability']}%"
@@ -247,9 +212,7 @@ with tab1:
         st.divider()
         st.subheader("🚨 High Priority Interventions")
         
-        # Sort logic: Risk DESC
         crit = df[(df['incident_probability'] >= 90) | (df['status'] == 'Relieved')].sort_values('incident_probability', ascending=False)
-        
         safe = df[df['incident_probability'] < 50].sort_values('incident_probability')
         if safe.empty: safe = df.sort_values('incident_probability', ascending=True).head(5)
         safe_opts = safe.apply(lambda x: f"{x['Full_Name']} [ID: {x['nurse_id']}] (Risk: {x['incident_probability']}%)", axis=1).tolist()
@@ -258,7 +221,6 @@ with tab1:
         else:
             for i, (idx, row) in enumerate(crit.iterrows()):
                 nurse_id = row['nurse_id']
-                
                 with st.container(border=True):
                     c1, c2, c3 = st.columns([1, 2, 1.2]) 
                     with c1: 
@@ -273,71 +235,71 @@ with tab1:
                     with c3:
                         if row['status'] != 'Relieved':
                             with st.popover("⚡ MANAGE SWAP", use_container_width=True):
-                                # UNIQUE ID KEYS (Prevents Glitch)
                                 sel = st.selectbox("Staff:", safe_opts, key=f"sel_{nurse_id}")
                                 rep_name = sel.split(" [")[0] if sel else "Unknown"
                                 if st.button("Confirm", key=f"btn_{nurse_id}", type="primary"):
                                     relieve_nurse_in_db(nurse_id, row['incident_probability'], rep_name)
                                     st.rerun()
-
         st.subheader("📋 Staff Roster")
         st.dataframe(df[['nurse_id', 'Full_Name', 'Department', 'Hours_On_Shift', 'BPM', 'incident_probability', 'status']].sort_values('incident_probability', ascending=False), use_container_width=True, hide_index=True)
+    else:
+        st.error("⚠️ Database Connection Failed. Attempting to wake up Azure SQL... please refresh in 10s.")
 
-# --- TAB 2: ANALYTICS + VOICE ---
+# --- TAB 2: ANALYTICS + VOICE (CRASH PROOFED) ---
 with tab2:
     st.header("📊 Analytics")
-    st.subheader("🧠 Sentinel: Voice-to-Risk Engine")
-    
-    with st.container(border=True):
-        st.info("ℹ️ **Mobile App Integration:** Select input method.")
-        nid = st.selectbox("Nurse ID", df['nurse_id'].unique())
-        
-        in_mode = st.radio("Input:", ["🎙️ Voice (Mobile)", "⌨️ Manual Entry"], horizontal=True)
-        transcript = ""
-        
-        if "Voice" in in_mode:
-            st.caption("Click to record audio via browser:")
-            audio = mic_recorder(start_prompt="🎤 START RECORDING", stop_prompt="⏹️ STOP", just_once=False, key='recorder')
-            
-            if audio:
-                st.audio(audio['bytes'])
-                with st.spinner("Processing Audio..."):
-                    try:
-                        audio_segment = AudioSegment.from_file(io.BytesIO(audio['bytes']), format="webm")
-                        wav_buffer = io.BytesIO()
-                        audio_segment.export(wav_buffer, format="wav")
-                        wav_buffer.seek(0)
-                        
-                        r = sr.Recognizer()
-                        with sr.AudioFile(wav_buffer) as source:
-                            audio_content = r.record(source)
-                            transcript = r.recognize_google(audio_content)
-                            st.success(f"**Transcript:** {transcript}")
-                            
-                    except Exception as e:
-                        st.error(f"Conversion Failed (FFmpeg missing?): {e}")
-                        st.warning("⚠️ Falling back to Simulation Mode for Demo...")
-                        transcript = "I am struggling to keep my eyes open and feeling very dizzy. I need a break."
-                        st.success(f"**Transcript:** {transcript}")
-        else:
-            transcript = st.text_input("Log Entry:", placeholder="Type here...")
-
-        if transcript:
-            if st.button("Analyze Input") or ("Voice" in in_mode):
-                score, phrases = run_sentinel_analysis(transcript)
-                c1, c2 = st.columns(2)
-                c1.metric("Stress Score", f"{int(score*100)}%")
-                c2.write(phrases)
-                
-                if score > 0.7:
-                    st.error("⚠️ CRITICAL. Updating Database...")
-                    with get_db_connection().begin() as conn:
-                        conn.execute(text("UPDATE nurses SET fatigue_risk=99 WHERE nurse_id=:id"), {"id": nid})
-                    time.sleep(1)
-                    st.rerun()
-    
-    st.divider()
     if df is not None:
+        st.subheader("🧠 Sentinel: Voice-to-Risk Engine")
+        
+        with st.container(border=True):
+            st.info("ℹ️ **Mobile App Integration:** Select input method.")
+            nid = st.selectbox("Nurse ID", df['nurse_id'].unique())
+            
+            in_mode = st.radio("Input:", ["🎙️ Voice (Mobile)", "⌨️ Manual Entry"], horizontal=True)
+            transcript = ""
+            
+            if "Voice" in in_mode:
+                st.caption("Click to record audio via browser:")
+                audio = mic_recorder(start_prompt="🎤 START RECORDING", stop_prompt="⏹️ STOP", just_once=False, key='recorder')
+                
+                if audio:
+                    st.audio(audio['bytes'])
+                    with st.spinner("Processing Audio..."):
+                        try:
+                            audio_segment = AudioSegment.from_file(io.BytesIO(audio['bytes']), format="webm")
+                            wav_buffer = io.BytesIO()
+                            audio_segment.export(wav_buffer, format="wav")
+                            wav_buffer.seek(0)
+                            
+                            r = sr.Recognizer()
+                            with sr.AudioFile(wav_buffer) as source:
+                                audio_content = r.record(source)
+                                transcript = r.recognize_google(audio_content)
+                                st.success(f"**Transcript:** {transcript}")
+                                
+                        except Exception as e:
+                            st.error(f"Conversion Failed (FFmpeg missing?): {e}")
+                            st.warning("⚠️ Falling back to Simulation Mode for Demo...")
+                            transcript = "I am struggling to keep my eyes open and feeling very dizzy. I need a break."
+                            st.success(f"**Transcript:** {transcript}")
+            else:
+                transcript = st.text_input("Log Entry:", placeholder="Type here...")
+
+            if transcript:
+                if st.button("Analyze Input") or ("Voice" in in_mode):
+                    score, phrases = run_sentinel_analysis(transcript)
+                    c1, c2 = st.columns(2)
+                    c1.metric("Stress Score", f"{int(score*100)}%")
+                    c2.write(phrases)
+                    
+                    if score > 0.7:
+                        st.error("⚠️ CRITICAL. Updating Database...")
+                        with get_db_connection().begin() as conn:
+                            conn.execute(text("UPDATE nurses SET fatigue_risk=99 WHERE nurse_id=:id"), {"id": nid})
+                        time.sleep(1)
+                        st.rerun()
+        
+        st.divider()
         c1, c2 = st.columns(2)
         with c1:
              st.markdown("##### Fatigue Load")
@@ -347,3 +309,5 @@ with tab2:
              st.header("⚖️ Audit Logs")
              if st.button("Refresh Logs"): st.rerun()
              st.dataframe(load_audit_logs(), use_container_width=True)
+    else:
+        st.info("No data available to analyze (DB Unavailable).")
