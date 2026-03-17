@@ -9,7 +9,7 @@ import requests
 import altair as alt 
 import ast
 
-# --- GEMINI AI IMPORT (Replaces Azure AI) ---
+# --- GEMINI AI IMPORT ---
 import google.generativeai as genai
 
 # --- REAL AUDIO IMPORTS ---
@@ -35,13 +35,11 @@ def inject_custom_css():
 inject_custom_css()
 
 # --- 2. CONFIGURATION ---
-# Removed Azure Secrets. Now only needs Discord (Optional) and Gemini Key.
 DISCORD_URL = st.secrets.get("DISCORD_WEBHOOK_URL", "")
 GEMINI_KEY = st.secrets.get("GEMINI_API_KEY", "")
 
 # --- 3. FREE DATABASE CONNECTION (SQLite) ---
 def get_db_connection():
-    # Creates a local file called shiftguard.db - 100% free and cannot "pause"
     return create_engine("sqlite:///shiftguard.db")
 
 def init_db():
@@ -65,15 +63,13 @@ def init_db():
             )
         """))
         
-        # Seed data if empty
         if conn.execute(text("SELECT COUNT(*) FROM nurses")).fetchone()[0] == 0:
             for i in range(1, 51):
                 conn.execute(text("INSERT INTO nurses (nurse_id, status, fatigue_risk) VALUES (:id, 'Active', 15)"), {"id": i})
 
-# Run database setup on boot
 init_db()
 
-# --- 4. SENTINEL ENGINE (Gemini AI instead of Azure) ---
+# --- 4. SENTINEL ENGINE (Gemini AI) ---
 def run_sentinel_analysis(text_input):
     if not GEMINI_KEY:
         return 0.88, ["System Offline", "No API Key"]
@@ -96,7 +92,7 @@ def run_sentinel_analysis(text_input):
     except Exception as e:
         return 0.95, ["Analysis Error", "Critical Fallback"]
 
-# --- 5. DATA LOADERS ---
+# --- 5. DATA LOADERS (ADVANCED RISK MODEL) ---
 def load_data():
     try:
         with get_db_connection().connect() as conn:
@@ -108,23 +104,33 @@ def load_data():
             first_names = ["Sarah", "Mike", "Jessica", "David", "Emily", "Robert", "Jennifer", "William", "Lisa", "James", "Maria", "Daniel", "Linda", "Kevin", "Susan", "Thomas"]
             last_names = ["Chen", "Smith", "Patel", "Johnson", "Kim", "Garcia", "Singh", "Miller", "Wong", "Jones", "Rodriguez", "Lee", "Martinez", "Anderson", "Taylor", "Wilson"]
             depts = ['ICU', 'ER', 'Pediatrics', 'Oncology', 'Surgical Ward']
+            shift_types = ['Day', 'Night']
             
             def gen_profile(nid):
-                fn_idx = nid % len(first_names)
-                ln_idx = (nid * 7) % len(last_names)
-                fn = f"{first_names[fn_idx]} {last_names[ln_idx]}"
+                fn = f"{first_names[nid % len(first_names)]} {last_names[(nid * 7) % len(last_names)]}"
                 dept = depts[nid % 5]
+                shift_type = shift_types[nid % 2]          
+                consecutive_days = 1 + (nid % 4)           
+                patient_load = 3 + (nid % 4)               
+                
                 base_shift = 6 + (nid % 10) 
                 hours_on_shift = np.round(base_shift + (nid % 3 * 0.5), 1)
                 bpm = int(65 + (hours_on_shift * 2) + (nid % 7))
-                return fn, dept, hours_on_shift, bpm
+                
+                return fn, dept, hours_on_shift, bpm, shift_type, consecutive_days, patient_load
 
-            df['Full_Name'], df['Department'], df['Hours_On_Shift'], df['BPM'] = zip(*df['nurse_id'].apply(gen_profile))
+            df['Full_Name'], df['Department'], df['Hours_On_Shift'], df['BPM'], df['Shift_Type'], df['Consecutive_Days'], df['Patient_Load'] = zip(*df['nurse_id'].apply(gen_profile))
             
             def calculate_risk(row):
                 if row['status'] == 'Relieved': return 12
-                stress_factor = max(0, row['BPM'] - 70)
-                risk_score = (row['Hours_On_Shift'] * 4.5) + (stress_factor * 1.2)
+                
+                base_fatigue = row['Hours_On_Shift'] * 3.0
+                physical_stress = max(0, row['BPM'] - 70) * 1.0
+                night_penalty = 10 if row['Shift_Type'] == 'Night' else 0
+                cumulative_penalty = (row['Consecutive_Days'] - 1) * 5
+                load_penalty = max(0, row['Patient_Load'] - 3) * 4
+                
+                risk_score = base_fatigue + physical_stress + night_penalty + cumulative_penalty + load_penalty
                 return int(min(max(risk_score, 5), 99))
 
             df['Calculated_Risk'] = df.apply(calculate_risk, axis=1)
@@ -255,7 +261,7 @@ with tab1:
                         if row['status'] == 'Relieved': st.success("✅ **RELIEVED**")
                         else: st.progress(row['incident_probability']/100, text=f"Risk: {row['incident_probability']}%")
                         with st.expander("📉 View Risk Factors"):
-                            st.caption(f"Shift: {row['Hours_On_Shift']}h | **Heart Rate: {row['BPM']} BPM**")
+                            st.caption(f"Shift: {row['Hours_On_Shift']}h ({row['Shift_Type']}) | **BPM: {row['BPM']}** | Patients: {row['Patient_Load']} | Day {row['Consecutive_Days']} in a row")
                     with c3:
                         if row['status'] != 'Relieved':
                             with st.popover("⚡ MANAGE SWAP", use_container_width=True):
@@ -265,7 +271,7 @@ with tab1:
                                     relieve_nurse_in_db(nurse_id, row['incident_probability'], rep_name)
                                     st.rerun()
         st.subheader("📋 Staff Roster")
-        st.dataframe(df[['nurse_id', 'Full_Name', 'Department', 'Hours_On_Shift', 'BPM', 'incident_probability', 'status']].sort_values('incident_probability', ascending=False), use_container_width=True, hide_index=True)
+        st.dataframe(df[['nurse_id', 'Full_Name', 'Department', 'Shift_Type', 'Consecutive_Days', 'Patient_Load', 'Hours_On_Shift', 'BPM', 'incident_probability', 'status']].sort_values('incident_probability', ascending=False), use_container_width=True, hide_index=True)
 
 # --- TAB 2: ANALYTICS + VOICE ---
 with tab2:
