@@ -17,3 +17,4 @@ azure-core
 SpeechRecognition
 streamlit-mic-recorder
 pydub
+google-generativeai
