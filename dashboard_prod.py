@@ -170,6 +170,19 @@ def reset_simulation():
         return True
     except: return False
 
+# --- LIVE REAL-TIME SIMULATION FRAGMENTS ---
+@st.fragment(run_every="2s")
+def render_live_unit_vitals(base_avg_bpm):
+    live_bpm = int(base_avg_bpm) + random.randint(-1, 2)
+    trend = live_bpm - int(base_avg_bpm)
+    delta_str = f"{trend} bpm" if trend != 0 else "--"
+    st.metric("Avg Unit BPM", f"{live_bpm}", delta=delta_str, delta_color="inverse")
+
+@st.fragment(run_every="1s")
+def render_nurse_vitals(base_bpm):
+    live_bpm = int(base_bpm) + random.randint(-3, 3)
+    st.markdown(f"Live Vitals: **<span style='color:#ff4b4b'>{live_bpm} BPM</span>** 🫀", unsafe_allow_html=True)
+
 # --- MAIN UI LAYOUT ---
 c1, c2 = st.columns([6, 2])
 with c1:
@@ -199,7 +212,10 @@ with tab1:
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total Staff", len(df), "Active on Floor")
         m2.metric("Critical Alerts", count, "Immediate Action Reqd", delta_color="inverse")
-        m3.metric("Avg Unit BPM", f"{int(df['BPM'].mean())}", "+12% vs Baseline", delta_color="inverse")
+        
+        with m3:
+            render_live_unit_vitals(df['BPM'].mean())
+            
         m4.metric("System Latency", "14ms", "SQLite Local")
 
         if count > 0:
@@ -261,7 +277,11 @@ with tab1:
                         if row['status'] == 'Relieved': st.success("✅ **RELIEVED**")
                         else: st.progress(row['incident_probability']/100, text=f"Risk: {row['incident_probability']}%")
                         with st.expander("📉 View Risk Factors"):
-                            st.caption(f"Shift: {row['Hours_On_Shift']}h ({row['Shift_Type']}) | **BPM: {row['BPM']}** | Patients: {row['Patient_Load']} | Day {row['Consecutive_Days']} in a row")
+                            st.caption(f"Shift: {row['Hours_On_Shift']}h ({row['Shift_Type']}) | Patients: {row['Patient_Load']} | Day {row['Consecutive_Days']}")
+                            if row['status'] != 'Relieved':
+                                render_nurse_vitals(row['BPM'])
+                            else:
+                                st.markdown(f"Final Vitals: **{row['BPM']} BPM** 🫀")
                     with c3:
                         if row['status'] != 'Relieved':
                             with st.popover("⚡ MANAGE SWAP", use_container_width=True):
