@@ -7,8 +7,10 @@ import time
 import random
 import requests
 import altair as alt 
-from azure.ai.textanalytics import TextAnalyticsClient
-from azure.core.credentials import AzureKeyCredential
+import ast
+
+# --- GEMINI AI IMPORT (Replaces Azure AI) ---
+import google.generativeai as genai
 
 # --- REAL AUDIO IMPORTS ---
 import speech_recognition as sr
@@ -23,53 +25,78 @@ def inject_custom_css():
     st.markdown("""
         <style>
             .stApp { background-color: #000000; color: #E5E5E5; font-family: 'Inter', sans-serif; }
-            #MainMenu {visibility: hidden;}
-            footer {visibility: hidden;}
-            header {visibility: hidden;}
-            div[data-testid="stMetric"], div[data-testid="stContainer"] {
-                background-color: #0F0F0F; border: 1px solid #333; border-radius: 6px; padding: 15px; color: white;
-            }
-            .user-msg { background-color: #FFFFFF; color: #000000; padding: 10px 15px; border-radius: 12px 12px 0 12px; margin: 5px 0; text-align: right; font-weight: 600; font-size: 0.9rem; }
-            .bot-msg { background-color: #1A1A1A; border: 1px solid #333; color: #DDD; padding: 10px 15px; border-radius: 12px 12px 12px 0; margin: 5px 0; font-family: monospace; font-size: 0.85rem; }
+            #MainMenu {visibility: hidden;} footer {visibility: hidden;} header {visibility: hidden;}
+            div[data-testid="stMetric"], div[data-testid="stContainer"] { background-color: #0F0F0F; border: 1px solid #333; border-radius: 6px; padding: 15px; color: white; }
             .critical-badge { background-color: #FFFFFF; color: #000000; font-weight: 900; padding: 4px 8px; border-radius: 4px; font-size: 0.75rem; }
-            button[data-baseweb="tab"] { color: #888; }
-            button[data-baseweb="tab"][aria-selected="true"] { color: #FFF; border-bottom-color: #FFF; }
+            button[data-baseweb="tab"] { color: #888; } button[data-baseweb="tab"][aria-selected="true"] { color: #FFF; border-bottom-color: #FFF; }
         </style>
     """, unsafe_allow_html=True)
 
 inject_custom_css()
 
-# --- 2. CLOUD CONFIGURATION ---
-try:
-    SERVER = st.secrets["SERVER"]
-    DATABASE = st.secrets["DATABASE"]
-    USERNAME = st.secrets["USERNAME"]
-    PASSWORD = st.secrets["PASSWORD"]
-    AI_KEY = st.secrets.get("AZURE_AI_KEY", "")
-    AI_ENDPOINT = st.secrets.get("AZURE_AI_ENDPOINT", "")
-    DISCORD_URL = st.secrets.get("DISCORD_WEBHOOK_URL", "")
-except FileNotFoundError:
-    st.error("Secrets not found! Please check Streamlit Cloud settings.")
-    st.stop()
+# --- 2. CONFIGURATION ---
+# Removed Azure Secrets. Now only needs Discord (Optional) and Gemini Key.
+DISCORD_URL = st.secrets.get("DISCORD_WEBHOOK_URL", "")
+GEMINI_KEY = st.secrets.get("GEMINI_API_KEY", "")
 
-# --- 3. DATABASE CONNECTION ---
+# --- 3. FREE DATABASE CONNECTION (SQLite) ---
 def get_db_connection():
-    return create_engine(f"mssql+pymssql://{USERNAME}:{PASSWORD}@{SERVER}/{DATABASE}")
+    # Creates a local file called shiftguard.db - 100% free and cannot "pause"
+    return create_engine("sqlite:///shiftguard.db")
 
-# --- 4. SENTINEL ENGINE (Azure AI) ---
+def init_db():
+    """Creates tables and initial dummy data if they don't exist yet."""
+    with get_db_connection().begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS nurses (
+                nurse_id INTEGER PRIMARY KEY,
+                status TEXT,
+                fatigue_risk INTEGER
+            )
+        """))
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                nurse_id INTEGER,
+                action_type TEXT,
+                risk_level_at_time INTEGER,
+                manager_action TEXT
+            )
+        """))
+        
+        # Seed data if empty
+        if conn.execute(text("SELECT COUNT(*) FROM nurses")).fetchone()[0] == 0:
+            for i in range(1, 51):
+                conn.execute(text("INSERT INTO nurses (nurse_id, status, fatigue_risk) VALUES (:id, 'Active', 15)"), {"id": i})
+
+# Run database setup on boot
+init_db()
+
+# --- 4. SENTINEL ENGINE (Gemini AI instead of Azure) ---
 def run_sentinel_analysis(text_input):
-    if not AI_KEY or not AI_ENDPOINT:
-        return 0.88, ["System Offline (Simulated)", "Fatigue"]
+    if not GEMINI_KEY:
+        return 0.88, ["System Offline", "No API Key"]
+    
     try:
-        credential = AzureKeyCredential(AI_KEY)
-        client = TextAnalyticsClient(endpoint=AI_ENDPOINT, credential=credential)
-        response = client.analyze_sentiment(documents=[text_input])[0]
-        kp = client.extract_key_phrases(documents=[text_input])[0]
-        return response.confidence_scores.negative, kp.key_phrases
-    except Exception:
-        return 0.0, ["Connection Error"]
+        genai.configure(api_key=GEMINI_KEY)
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        prompt = f"""
+        Analyze this nurse's log for fatigue and distress: '{text_input}'
+        Return ONLY a valid Python dictionary (no markdown, no other text) with two keys:
+        'risk_score': a float between 0.0 (safe) and 1.0 (critical danger)
+        'phrases': a list of two short symptom keywords.
+        Example: {{"risk_score": 0.85, "phrases": ["dizzy", "exhausted"]}}
+        """
+        response = model.generate_content(prompt)
+        clean_text = response.text.strip().replace("```python", "").replace("```json", "").replace("```", "")
+        result = ast.literal_eval(clean_text)
+        return result.get("risk_score", 0.0), result.get("phrases", ["Unknown"])
+    except Exception as e:
+        return 0.95, ["Analysis Error", "Critical Fallback"]
 
-# --- 5. DATA LOADERS (STABLE MODE) ---
+# --- 5. DATA LOADERS ---
 def load_data():
     try:
         with get_db_connection().connect() as conn:
@@ -83,7 +110,6 @@ def load_data():
             depts = ['ICU', 'ER', 'Pediatrics', 'Oncology', 'Surgical Ward']
             
             def gen_profile(nid):
-                # STABLE HASHING
                 fn_idx = nid % len(first_names)
                 ln_idx = (nid * 7) % len(last_names)
                 fn = f"{first_names[fn_idx]} {last_names[ln_idx]}"
@@ -110,7 +136,7 @@ def load_data():
 def load_audit_logs():
     try:
         with get_db_connection().connect() as conn:
-            return pd.read_sql(text("SELECT TOP 50 * FROM audit_logs ORDER BY timestamp DESC"), conn)
+            return pd.read_sql(text("SELECT * FROM audit_logs ORDER BY timestamp DESC LIMIT 50"), conn)
     except: return pd.DataFrame() 
 
 # --- 6. ACTIONS ---
@@ -133,7 +159,7 @@ def reset_simulation():
         with get_db_connection().begin() as conn:
             conn.execute(text("UPDATE nurses SET status = 'Active', fatigue_risk = 15"))
             conn.execute(text("UPDATE nurses SET fatigue_risk = 98 WHERE nurse_id IN (9, 19, 38)")) 
-            conn.execute(text("TRUNCATE TABLE audit_logs"))
+            conn.execute(text("DELETE FROM audit_logs"))
             conn.execute(text("INSERT INTO audit_logs (nurse_id, action_type, risk_level_at_time, manager_action) VALUES (101, 'AI_AUTO_RESOLVE', 88, 'Auto-Swap with Float Pool')"))
         return True
     except: return False
@@ -154,8 +180,6 @@ with st.sidebar:
         reset_simulation()
         st.rerun()
 
-# --- FIX: LOAD DATA GLOBALLY ---
-# Moving this OUT of Tab 1 ensures both tabs can access it
 df = load_data()
 
 tab1, tab2 = st.tabs(["🔴 Live Operations", "📊 Analytics & Voice"])
@@ -170,7 +194,7 @@ with tab1:
         m1.metric("Total Staff", len(df), "Active on Floor")
         m2.metric("Critical Alerts", count, "Immediate Action Reqd", delta_color="inverse")
         m3.metric("Avg Unit BPM", f"{int(df['BPM'].mean())}", "+12% vs Baseline", delta_color="inverse")
-        m4.metric("System Latency", "24ms", "Azure SQL")
+        m4.metric("System Latency", "14ms", "SQLite Local")
 
         if count > 0:
             with st.expander("🤖 **RECOMMENDATION ENGINE**", expanded=True):
@@ -242,10 +266,8 @@ with tab1:
                                     st.rerun()
         st.subheader("📋 Staff Roster")
         st.dataframe(df[['nurse_id', 'Full_Name', 'Department', 'Hours_On_Shift', 'BPM', 'incident_probability', 'status']].sort_values('incident_probability', ascending=False), use_container_width=True, hide_index=True)
-    else:
-        st.error("⚠️ Database Connection Failed. Attempting to wake up Azure SQL... please refresh in 10s.")
 
-# --- TAB 2: ANALYTICS + VOICE (CRASH PROOFED) ---
+# --- TAB 2: ANALYTICS + VOICE ---
 with tab2:
     st.header("📊 Analytics")
     if df is not None:
@@ -309,5 +331,3 @@ with tab2:
              st.header("⚖️ Audit Logs")
              if st.button("Refresh Logs"): st.rerun()
              st.dataframe(load_audit_logs(), use_container_width=True)
-    else:
-        st.info("No data available to analyze (DB Unavailable).")
